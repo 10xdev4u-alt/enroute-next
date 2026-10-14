@@ -23,6 +23,10 @@ built it like a modern database? Our answer:
    no external database and no maintenance jobs. Start with one node and grow
    to a replicated cluster without pushing a single repository again.
 
+The push throughput figure comes from `forgemark`. The blog post,
+[Everyone is doing Git on S3 wrong](https://enroute.sh/blog/everyone-is-doing-git-on-s3-wrong),
+states the runs behind it and the comparison with other servers.
+
 ## How does it work?
 
 Most Git servers keep each repository as a directory of files on the disk of
