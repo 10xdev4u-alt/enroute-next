@@ -219,7 +219,7 @@ message LayerEdit {
 }
 
 // A repository's state at a log index of an incarnation: in the object
-// store (repos/<repo>/state and repos/<repo>/epochs/<E>), and in its log's
+// store (`repos/<repo>/state` and `repos/<repo>/epochs/<E>`), and in its
 // snapshots (so a recovering node knows which log is which).
 message Record {
   string repo = 1;

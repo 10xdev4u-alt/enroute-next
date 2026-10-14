@@ -225,7 +225,7 @@ impl Storage {
     /// `dir`: the local copies (and the catalog). `disk_budget`: bound the
     /// local disk they use to this many bytes: chunks are loaded as they
     /// are read and evicted under pressure (see
-    /// [`DiskCache`](super::tiered::DiskCache)). 0:
+    /// `DiskCache`). 0:
     /// unbounded, and files opened remotely are copied in full in the
     /// background. `max_open_files`: how many files the storage may keep
     /// open, layer files and scratch files together, split 3:1 (None: as

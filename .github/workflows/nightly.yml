@@ -1,0 +1,60 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "40 4 * * *"
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Property-test cases per property
+        default: "2000"
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+# What is too slow or too impolite to run on every pull request, run every
+# night instead. Both jobs fail loudly rather than filing anything: a red
+# scheduled run is the report.
+jobs:
+  # The property tests at a case count a pull request cannot afford, over the
+  # three places untrusted input arrives: packet lines, deltas, and the layer
+  # lookup. A failure names the input that broke it, in the log.
+  properties:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - run: cargo xtask ci unit
+        env:
+          PROPTEST_CASES: ${{ inputs.cases || '2000' }}
+          PROPTEST_MAX_SHRINK_ITERS: "100000"
+
+  # A dependency with a published advisory, before a release rather than
+  # during one. Not a pull-request gate: the fix for one is usually upstream.
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: rustup toolchain install
+
+      # From source at the current release: the advisory database it fetches is
+      # the part that has to be fresh, so the binary is not pinned.
+      - run: cargo install cargo-audit
+
+      - run: cargo audit

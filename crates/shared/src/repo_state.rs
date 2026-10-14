@@ -127,7 +127,10 @@ mod tests {
     /// read `acme` as the repository and `widgets/...` as the epoch.
     #[test]
     fn a_namespaced_key_survives_the_split() {
-        assert_eq!(trash_path("acme/widgets", 7), "trash/acme/widgets/0000000000000007");
+        assert_eq!(
+            trash_path("acme/widgets", 7),
+            "trash/acme/widgets/0000000000000007"
+        );
         assert_eq!(
             parse_trash_path("trash/acme/widgets/0000000000000007"),
             Some(("acme/widgets", 7))

@@ -25,21 +25,31 @@ respect the review time you are asking for.
 ## Build and test
 
 ```sh
-cargo build
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo xtask lint
-cargo test --workspace
+cargo xtask ci tools   # once: the checkers, at pinned versions
+cargo xtask ci         # everything CI runs, here
 ```
 
-`cargo xtask lint` runs this repository's own rules, which fmt and clippy do
-not cover: import shape, comment shape, dead code across crates, layering,
-manifest inheritance, the contract and the copy of it inside the skill. A
-change that fails it fails review.
+The pipeline is a program (`dev/xtask/src/ci`), not a list in a workflow file:
+the workflow jobs name checks, and both call the same commands. `cargo xtask ci`
+runs all of them and prints a table of what passed and how long it took;
+`cargo xtask ci fmt clippy` runs some; `cargo xtask ci list` says what each one
+proves. A single check is worth running on its own — `cargo xtask ci unit` is
+seconds, `cargo xtask ci e2e` is minutes.
 
-`cargo test --workspace` starts real nodes with a local bucket and needs `git`
-on the path. Those tests are the ones that prove a change to the push or fetch
-path.
+Run it before you send a patch. The class of failure this prevents is the one
+you cannot see locally: `cargo fmt --all --check` is not something a person
+types, and for twenty-three consecutive pull requests the only thing that ever
+ran it was a runner after the push.
+
+Among them: `lint` runs this repository's own rules, which fmt and clippy do not
+cover (import shape, comment shape, dead code across crates, layering, manifest
+inheritance, and the copy of the wire contract inside the skill). `e2e` starts
+real nodes against a local bucket and needs `git` on the path; those tests are
+the ones that prove a change to the push or fetch path.
+
+`.github/workflows/ci.yml` runs the same checks in four jobs. A check that no
+job names fails the run: `cargo xtask ci verify-workflow` is the guard, so a
+check cannot be dropped from the pipeline by editing the workflow alone.
 
 ## Commit messages
 

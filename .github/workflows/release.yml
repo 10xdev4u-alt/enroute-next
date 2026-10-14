@@ -105,17 +105,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - run: cargo fmt --all --check
+      - run: rustup toolchain install
 
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The pinned checkers, from the one place their versions live.
+      - run: cargo xtask ci tools
 
-      - uses: bufbuild/buf-setup-action@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - run: cargo install cargo-machete --locked
-
-      - run: cargo xtask lint
+      # The same checks `ci.yml` names, named the same way: a release is gated
+      # on what a pull request was gated on, so the two lists cannot drift.
+      - run: cargo xtask ci fmt clippy lint
 
   linux:
     needs: [version, lint]

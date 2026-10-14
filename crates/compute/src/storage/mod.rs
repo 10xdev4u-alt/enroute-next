@@ -14,6 +14,11 @@ mod spill;
 mod store;
 mod tiered;
 
+// Only the contract's test names the escape, from outside this module (the
+// module itself is private, so it has to be re-exported to be reached); in a
+// non-test build nothing here escapes with a `%`, so an unconditional
+// re-export would be dead.
+#[cfg(test)]
 pub(crate) use key::local_dir_name;
 pub(crate) use layer::{Layer, LayerBuilder, NewCommit, NewObject, Ref, RefTarget, TableRecord};
 pub(crate) use pool::Access;

@@ -174,7 +174,7 @@ fn path(id: u64) -> String {
 impl Registry {
     /// Register this (ledger) node as a member and read the registry once.
     /// Refused while another live node registered `id` from another address
-    /// (see [`check_unique`]).
+    /// (see `check_unique`).
     ///
     /// # Errors
     ///
@@ -479,7 +479,11 @@ mod tests {
     /// the failure `removed` exists to prevent.
     #[test]
     fn a_members_document_missing_a_list_is_refused() {
-        assert!(serde_json::from_str::<Members>("{}").is_err());
-        assert!(serde_json::from_str::<Members>(r#"{"members":[1]}"#).is_err());
+        // Refused for the missing list itself, not for a syntax error: the
+        // distinction is the whole value of the case.
+        let err = serde_json::from_str::<Members>("{}").unwrap_err();
+        assert!(err.to_string().contains("missing field"), "{err}");
+        let err = serde_json::from_str::<Members>(r#"{"members":[1]}"#).unwrap_err();
+        assert!(err.to_string().contains("missing field"), "{err}");
     }
 }

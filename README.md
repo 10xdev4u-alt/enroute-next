@@ -4,6 +4,9 @@
   <a href="https://github.com/enroute-sh/enroute/blob/HEAD/LICENSE">
     <img src="https://img.shields.io/badge/License-Apache_2.0-E11311.svg" alt="Apache 2.0 License">
   </a>
+  <a href="https://github.com/10xdev4u-alt/enroute-next/actions/workflows/ci.yml">
+    <img src="https://github.com/10xdev4u-alt/enroute-next/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
 </p>
 
 **Enroute** is a _fast_, _programmable_ Git server that is _easy to operate_.
