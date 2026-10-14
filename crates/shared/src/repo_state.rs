@@ -102,3 +102,59 @@ pub async fn latest(objects: &Objects, repo: &str) -> Result<Option<(Record, Obj
     };
     Ok(Some((Record::from_bytes(&data)?, version)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sweep reads a trash path back to find the layer files it names, so
+    /// the two have to agree. An epoch is padded to sixteen hex digits so that
+    /// the object store lists incarnations in numeric order.
+    #[test]
+    fn a_trash_path_round_trips() {
+        for (repo, epoch) in [
+            ("acme", 0_u64),
+            ("acme/widgets", 1),
+            ("3f1b9a4e-0000-4000-8000-000000000000", u64::MAX),
+        ] {
+            let path = trash_path(repo, epoch);
+            assert_eq!(parse_trash_path(&path), Some((repo, epoch)), "{path}");
+        }
+    }
+
+    /// A key may contain `/`, so the repository is everything before the last
+    /// segment and the epoch is the last one. Splitting on the first `/` would
+    /// read `acme` as the repository and `widgets/...` as the epoch.
+    #[test]
+    fn a_namespaced_key_survives_the_split() {
+        assert_eq!(trash_path("acme/widgets", 7), "trash/acme/widgets/0000000000000007");
+        assert_eq!(
+            parse_trash_path("trash/acme/widgets/0000000000000007"),
+            Some(("acme/widgets", 7))
+        );
+    }
+
+    #[test]
+    fn an_epoch_is_sixteen_hex_digits() {
+        assert_eq!(epoch_path("acme", 1), "repos/acme/epochs/0000000000000001");
+        assert_eq!(
+            epoch_path("acme", u64::MAX),
+            "repos/acme/epochs/ffffffffffffffff"
+        );
+        assert_eq!(state_path("acme/widgets"), "repos/acme/widgets/state");
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_trash_path_is_refused() {
+        for bad in [
+            "repos/acme/state",
+            "trash/acme",
+            "trash/acme/zz",
+            "trash/acme/",
+            "trash/",
+            "",
+        ] {
+            assert_eq!(parse_trash_path(bad), None, "{bad:?}");
+        }
+    }
+}
