@@ -71,6 +71,11 @@ jobs:
           name: checkers
           path: target/tools
 
+      # The artifact is what makes this cheap, and this is what makes it
+      # correct: an artifact can carry a copy without its mode, and `tools`
+      # repairs that instead of downloading the checker again.
+      - run: cargo xtask ci tools
+
       - run: cargo xtask ci fmt clippy lint
 
   test:
