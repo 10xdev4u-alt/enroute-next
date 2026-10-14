@@ -99,3 +99,58 @@ pub(crate) fn par_blocks<T: Send>(blocks: usize, work: impl Fn(usize) -> T + Syn
     }
     (0..blocks).into_par_iter().map(&work).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use quick_cache::Weighter as _;
+
+    use super::*;
+
+    /// A cached buffer costs its bytes plus a fixed overhead. The overhead is
+    /// what makes the entry count in `byte_cache` a count and not an accident:
+    /// without it, a cache of many empty buffers would weigh nothing and never
+    /// evict.
+    #[test]
+    fn a_buffer_weighs_its_bytes_plus_a_fixed_overhead() {
+        let weight = ByteWeight;
+        assert_eq!(weight.weight(&0_u64, &Arc::new(Vec::new())), 128);
+        assert_eq!(
+            weight.weight(&0_u64, &Arc::new(vec![0_u8; 4096])),
+            4096 + 128
+        );
+        assert_eq!(weight.weight(&7_u64, &Arc::new(vec![0_u8; 1])), 1 + 128);
+    }
+
+    /// The weight is a fact about the value, not about the key.
+    #[test]
+    fn the_key_does_not_change_the_weight() {
+        let weight = ByteWeight;
+        let value = Arc::new(vec![0_u8; 32]);
+        assert_eq!(weight.weight(&1_u64, &value), weight.weight(&2_u64, &value));
+    }
+
+    /// A budget of zero bytes admits nothing, because every entry weighs its
+    /// bytes plus the per-entry overhead, and 128 is more than zero.
+    ///
+    /// Asserted rather than changed. It is worth knowing that a zero here
+    /// silently turns caching off, where `node.disk_cache` means "no limit" by
+    /// the same value. That is a configuration decision, not a test's.
+    #[test]
+    fn a_cache_of_no_bytes_admits_nothing() {
+        let cache: ByteCache<u64> = byte_cache(0);
+        cache.insert(1, Arc::new(vec![7_u8]));
+        assert!(cache.get(&1).is_none());
+    }
+
+    /// The two conversions the engine reads timings through, at the point where
+    /// the unit changes.
+    #[test]
+    fn durations_convert_to_each_unit() {
+        assert_eq!(micros(std::time::Duration::from_micros(1_500)), 1_500);
+        assert_eq!(millis(std::time::Duration::from_micros(1_500)), 1);
+        assert_eq!(millis(std::time::Duration::from_millis(2)), 2);
+        assert_eq!(unix_ms(std::time::UNIX_EPOCH), 0);
+    }
+}
