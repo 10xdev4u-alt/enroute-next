@@ -187,4 +187,22 @@ mod tests {
         try_data(&mut Vec::new(), b"").unwrap_err();
         try_data(&mut Vec::new(), &vec![b'x'; MAX_DATA + 1]).unwrap_err();
     }
+
+    /// `split_once` takes the first separator and keeps it out of both halves.
+    /// Its callers read the name before the space as a command and the rest as
+    /// arguments, so a second separator must stay in the second half.
+    #[test]
+    fn split_once_takes_the_first_separator() {
+        for (line, expected) in [
+            (&b"a b"[..], Some((&b"a"[..], &b"b"[..]))),
+            (&b"a b c"[..], Some((&b"a"[..], &b"b c"[..]))),
+            (&b" a"[..], Some((&b""[..], &b"a"[..]))),
+            (&b"a "[..], Some((&b"a"[..], &b""[..]))),
+            (&b" "[..], Some((&b""[..], &b""[..]))),
+            (&b"abc"[..], None),
+            (&b""[..], None),
+        ] {
+            assert_eq!(super::split_once(line, b' '), expected, "{line:?}");
+        }
+    }
 }
