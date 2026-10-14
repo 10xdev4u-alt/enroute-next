@@ -33,9 +33,20 @@ impl FileKey {
     /// Path of the local copy under `root`.
     pub(crate) fn local_path(&self, root: &Path) -> PathBuf {
         root.join("layers")
-            .join(self.repo.replace('/', "%2F"))
+            .join(local_dir_name(&self.repo))
             .join(format!("{}.layer", self.id))
     }
+}
+
+/// The name of the local directory holding one repository's layers.
+///
+/// A key's `/` separates directories in the object store and must not here:
+/// the cache keeps one directory per repository. The escape stays injective
+/// because no key contains `%`. That is a rule of `contract::repo_key`, which
+/// asserts the coupling from its side, so this module keeps the two
+/// dependencies the layer rule allows it.
+pub(crate) fn local_dir_name(repo: &str) -> String {
+    repo.replace('/', "%2F")
 }
 
 #[cfg(test)]
@@ -64,31 +75,6 @@ mod tests {
             key.local_path(Path::new("/cache")),
             Path::new("/cache/layers/acme%2Fwidgets/0123abcd.layer")
         );
-    }
-
-    /// The escaping is injective only over repositories that exist, which is
-    /// what keeps two of them from sharing a cache directory. The invariant it
-    /// rests on lives in the key rules and not here, so the test names both
-    /// halves: the escaped name is what this transform produces, and no key
-    /// could be that name.
-    #[test]
-    fn escaping_a_key_produces_a_name_no_key_could_be() {
-        use crate::contract::repo_key::RepoKey;
-
-        let root = Path::new("/cache");
-        let dir = |repo: &str| {
-            FileKey::new(repo, "id")
-                .local_path(root)
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap()
-        };
-        let escaped = dir("acme/widgets");
-        assert_eq!(escaped, dir("acme%2Fwidgets"));
-        assert_eq!(escaped.file_name().unwrap(), "acme%2Fwidgets");
-        // The one line that makes the collision above unreachable.
-        assert!(!RepoKey::is_valid("acme%2Fwidgets"));
-        assert!(RepoKey::is_valid("acme/widgets"));
     }
 
     #[test]

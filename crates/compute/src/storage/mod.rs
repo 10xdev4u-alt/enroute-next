@@ -14,6 +14,7 @@ mod spill;
 mod store;
 mod tiered;
 
+pub(crate) use key::local_dir_name;
 pub(crate) use layer::{Layer, LayerBuilder, NewCommit, NewObject, Ref, RefTarget, TableRecord};
 pub(crate) use pool::Access;
 pub(crate) use spill::{BitSet, OidIndex, TempTable, Workspace};
