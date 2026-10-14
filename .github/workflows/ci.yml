@@ -34,3 +34,14 @@ jobs:
       - run: cargo xtask lint
 
       - run: cargo test --workspace
+
+  # install.sh reaches users through `curl -sSL ... | sh`, and the glibc gate
+  # it carries decides whether the Linux binaries run at all.
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: sh -n install.sh
+      - run: shellcheck install.sh
+      - run: sh dev/install-version-test.sh
