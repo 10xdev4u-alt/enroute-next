@@ -34,6 +34,10 @@ impl Oid {
 
     /// The id in `b`, which must be `OID_LEN` bytes long.
     ///
+    /// Bytes past `OID_LEN` are ignored rather than refused: this reads a
+    /// slice whose length the caller has already established, and a truncated
+    /// copy would name a different object than the one it came from.
+    ///
     /// # Panics
     ///
     /// Panics if `b` is shorter than `OID_LEN` bytes.
@@ -140,5 +144,84 @@ mod tests {
     #[test]
     fn wire_length_is_the_id_length() {
         assert_eq!(usize::try_from(OID_WIRE_LEN).unwrap(), OID_LEN);
+    }
+
+    /// `Oid` is `message Oid { bytes id = 1; }` in the contract, so the
+    /// hand-written codec must put exactly those bytes on the wire: key 1,
+    /// length-delimited, `OID_LEN` bytes. A wrong tag or length would stay
+    /// invisible until another language decoded it.
+    #[test]
+    fn the_wire_form_is_the_generated_message() {
+        use prost::Message as _;
+
+        let oid = Oid::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap();
+        let encoded = oid.encode_to_vec();
+        assert_eq!(oid.encoded_len(), encoded.len());
+
+        let mut expected = vec![0x0a, u8::try_from(OID_LEN).unwrap()];
+        expected.extend_from_slice(oid.as_bytes());
+        assert_eq!(encoded, expected);
+    }
+
+    #[test]
+    fn the_wire_form_round_trips() {
+        use prost::Message as _;
+
+        for hex in [
+            "0000000000000000000000000000000000000000",
+            "0123456789abcdef0123456789abcdef01234567",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        ] {
+            let oid = Oid::from_hex(hex).unwrap();
+            let decoded = Oid::decode(&oid.encode_to_vec()[..]).unwrap();
+            assert_eq!(decoded, oid, "{hex}");
+        }
+    }
+
+    /// The field carries `OID_LEN` bytes or it names nothing. Anything else
+    /// must fail the decode rather than leave a zero-padded id.
+    #[test]
+    fn a_wire_id_of_the_wrong_length_is_refused() {
+        use prost::Message as _;
+
+        for len in [0u8, 19, 21] {
+            let mut buf = vec![0x0a, len];
+            buf.extend(std::iter::repeat_n(0xab, usize::from(len)));
+            assert!(Oid::decode(&buf[..]).is_err(), "length {len}");
+        }
+    }
+
+    #[test]
+    fn clearing_yields_the_zero_id() {
+        use prost::Message as _;
+
+        let mut oid = Oid::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap();
+        oid.clear();
+        assert!(oid.is_zero());
+        assert_eq!(oid, Oid::ZERO);
+    }
+
+    #[test]
+    fn hex_round_trips_and_refuses_anything_else() {
+        let hex = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(Oid::from_hex(hex).unwrap().to_hex(), hex);
+        // Surrounding whitespace is ignored, because the value arrives from a
+        // command line or a file as often as from the wire.
+        assert_eq!(Oid::from_hex(&format!("  {hex}\n")).unwrap().to_hex(), hex);
+        for bad in ["", "abc", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+            assert!(Oid::from_hex(bad).is_err(), "{bad:?}");
+        }
+        for bad in [hex[..39].to_string(), format!("{hex}0")] {
+            assert!(Oid::from_hex(&bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The documented contract, pinned: the first `OID_LEN` bytes are the id,
+    /// and the rest is ignored.
+    #[test]
+    fn from_slice_uses_the_first_id_length_bytes() {
+        let mut bytes = vec![0x5au8; OID_LEN];
+        bytes.extend_from_slice(&[0xff; 8]);
+        assert_eq!(Oid::from_slice(&bytes).as_bytes(), &[0x5a; OID_LEN]);
     }
 }
