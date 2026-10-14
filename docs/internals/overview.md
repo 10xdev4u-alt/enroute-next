@@ -162,3 +162,32 @@ Enroute has three parts. Dependencies point down only:
   the compute do not depend on each other. They meet only at the ledger
   service.
 - The public contract: the API and the hook signatures.
+
+## Protocol surface
+
+What a client may ask for today, and where it is decided. The sections above
+describe each of these in prose; this table is the index.
+
+| Capability | Where | State |
+| --- | --- | --- |
+| `ls-refs` with `unborn`, `peel`, `symrefs` | Fetch | Supported |
+| `fetch`, protocol v2 | Fetch | Supported |
+| `upload-pack` protocol v0 and v1 (stateless RPC) | Fetch | Supported, from the same planner |
+| `thin-pack`, `include-tag` | Fetch | Supported |
+| `filter` with `blob:none`, `blob:limit=<n>`, `tree:0` | Fetch | Supported |
+| `shallow`, `deepen <n>`, `deepen-relative`, `--unshallow` | Fetch | Supported |
+| `receive-pack`, protocol v0 | Push | Supported, because v2 defines no push |
+| Thin packs and gzip request bodies | Push | Supported |
+| `report-status`, `side-band-64k`, `quiet` | Push | Supported |
+| `atomic` | Push | Supported |
+| `delete-refs` | Push | Supported |
+| Server-side commits (`CommitService.CreateCommit`) | Contract | Supported |
+| `PushToRemote` | Contract | Supported, push-only `https` |
+| `PullFromRemote` | Contract | Not implemented |
+| SSH transport | Transport | Not supported |
+| `git://` transport | Transport | Not supported |
+| `packfile-uris`, `bundle-uri` | Fetch | Deliberately unused: a stock client must be fast without them |
+| SHA-256 object format | Storage | Not supported: SHA-1 only |
+
+The transport rows are separate from the rest: a capability reaches a client
+only through a transport, so adding SSH would change no fetch or push row.
