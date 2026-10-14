@@ -205,4 +205,44 @@ mod tests {
             assert_eq!(super::split_once(line, b' '), expected, "{line:?}");
         }
     }
+
+    /// The largest legal payload is exactly `MAX_DATA`, and one byte more is
+    /// not. The writers bracket the reader, so this is where an off-by-one in
+    /// the length prefix would show.
+    #[test]
+    fn the_largest_payload_is_legal_and_one_more_is_not() {
+        let largest = vec![b'x'; MAX_DATA];
+        let mut buf = Vec::new();
+        try_data(&mut buf, &largest).unwrap();
+        let read: Vec<Pkt<'_>> = Reader::new(&buf).collect::<anyhow::Result<_>>().unwrap();
+        assert_eq!(read, vec![Pkt::Data(&largest)]);
+
+        try_data(&mut Vec::new(), &vec![b'x'; MAX_DATA + 1]).unwrap_err();
+    }
+
+    /// A side-band line carries one byte of band, so a payload longer than
+    /// `MAX_DATA - 1` splits. A reader must reassemble the chunks in order.
+    #[test]
+    fn a_side_band_payload_splits_and_reassembles() {
+        use super::sideband;
+
+        let payload: Vec<u8> = (0..(MAX_DATA * 2))
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        let mut buf = Vec::new();
+        sideband(&mut buf, 2, &payload);
+
+        let mut seen = Vec::new();
+        for pkt in Reader::new(&buf) {
+            match pkt.unwrap() {
+                Pkt::Data(line) => {
+                    let (band, data) = line.split_first().expect("a band byte");
+                    assert_eq!(*band, 2);
+                    seen.extend_from_slice(data);
+                }
+                other => panic!("unexpected packet {other:?}"),
+            }
+        }
+        assert_eq!(seen, payload);
+    }
 }
