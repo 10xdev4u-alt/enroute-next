@@ -181,6 +181,13 @@ pub(crate) fn run(root: &Path, check_only: bool) -> Result<()> {
             println!("ok      {} {}", tool.name, tool.version);
             continue;
         }
+        // A copy that lost its mode on the way here — through an artifact, a
+        // restored cache, a `cp` without `-p` — is repaired, not downloaded
+        // again: the bytes are the ones the version check would accept.
+        if !check_only && repaired(root, tool) && installed(root, tool) {
+            println!("ok      {} {} (repaired)", tool.name, tool.version);
+            continue;
+        }
         if check_only {
             report_missing(tool);
             missing.push(tool.name);
@@ -207,6 +214,22 @@ pub(crate) fn run(root: &Path, check_only: bool) -> Result<()> {
         missing.len(),
         missing.join(", ")
     )
+}
+
+/// Make an unusable local copy runnable again, if that is all it needs.
+///
+/// True only when there was a copy to repair, since a missing checker has to
+/// be downloaded rather than repaired.
+#[cfg(unix)]
+fn repaired(root: &Path, tool: &Tool) -> bool {
+    let local = dir(root).join("bin").join(tool.name);
+    local.is_file() && make_executable(&local).is_ok()
+}
+
+/// Nothing to repair off unix, where a file's mode is not what runs it.
+#[cfg(not(unix))]
+fn repaired(_root: &Path, _tool: &Tool) -> bool {
+    false
 }
 
 /// The refusal to continue with a checker that is not the pinned one.
@@ -367,6 +390,29 @@ mod tests {
             assert!(key.contains(tool.name), "{key}");
             assert!(key.contains(tool.version), "{key}");
         }
+    }
+
+    /// A copy that arrives without its mode — an artifact, a restored cache —
+    /// has to be repaired, and the repair has to leave something runnable.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_without_its_mode_is_made_runnable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("checker");
+        std::fs::write(&script, "#!/bin/sh\necho 1.2.3\n").unwrap();
+        // What `unzip` leaves behind: readable, not runnable.
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            Command::new(&script).output().is_err(),
+            "the copy starts out unrunnable"
+        );
+
+        make_executable(&script).unwrap();
+
+        let output = Command::new(&script).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "1.2.3");
     }
 
     /// `ShellCheck` ships one binary inside a versioned directory, which is

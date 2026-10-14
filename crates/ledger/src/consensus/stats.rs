@@ -80,3 +80,65 @@ fn trunc(x: f64) -> u64 {
     let n = x as u64;
     n
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stand-in for the loop's counters: the window is generic, and this is
+    /// about when it reports, not about what it carries.
+    #[derive(Default)]
+    struct Counters {
+        calls: u64,
+    }
+
+    /// A window reports every five seconds, not on every call. The numbers it
+    /// carries are rates over a window, so a report per call would divide by a
+    /// span of microseconds and read as an idle node.
+    #[test]
+    fn a_window_reports_only_once_it_has_lasted() {
+        let mut window = Window::<Counters>::new();
+        window.calls = 3;
+        assert_eq!(
+            window.calls, 3,
+            "the counters are written through the window"
+        );
+        assert!(
+            window.due().is_none(),
+            "a window that has just opened is not due"
+        );
+
+        std::thread::sleep(EVERY + Duration::from_millis(50));
+
+        let (span, stats) = window.due().expect("five seconds have passed");
+        assert!(span >= EVERY.as_secs_f64(), "{span}");
+        assert_eq!(stats.calls, 3, "the report carries what was counted");
+        assert_eq!(window.calls, 0, "the next window starts empty");
+        assert!(
+            window.due().is_none(),
+            "and it is not due again immediately"
+        );
+    }
+
+    /// `per` divides, truncates, and answers zero rather than dividing by a
+    /// window nothing happened in — the state most fresh nodes are in.
+    #[test]
+    fn per_divides_and_never_divides_by_nothing() {
+        assert_eq!(per(0, 0), 0);
+        assert_eq!(per(7, 0), 0);
+        assert_eq!(per(10, 4), 2, "whole numbers only");
+        assert_eq!(per(u128::MAX, 1), u64::MAX, "saturating, not wrapping");
+    }
+
+    /// Rates are per second and percentages are of the window. Both truncate:
+    /// these are log lines, and a rounding rule nobody reads is noise in them.
+    #[test]
+    fn rates_and_percentages_truncate() {
+        assert_eq!(rate(300, 5.0), 60);
+        assert_eq!(rate(1, 2.0), 0);
+        assert_eq!(rate(0, 5.0), 0);
+        assert_eq!(pct(Duration::from_secs(1), 5.0), 20);
+        assert_eq!(pct(Duration::from_millis(1), 5.0), 0);
+        assert_eq!(pct(Duration::from_secs(5), 5.0), 100);
+    }
+}

@@ -105,7 +105,120 @@ pub async fn latest(objects: &Objects, repo: &str) -> Result<Option<(Record, Obj
 
 #[cfg(test)]
 mod tests {
+    use crate::oid::Oid;
+    use crate::state::{LayerMeta, layer_id};
+
     use super::*;
+
+    /// A record is written by one incarnation and read by a node that has
+    /// never seen it, so the pair has to survive being the only two things
+    /// between them.
+    #[test]
+    fn a_record_round_trips_through_its_stored_form() {
+        let mut record = Record {
+            repo: "acme/widgets".to_string(),
+            epoch: 3,
+            index: 17,
+            voters: vec![1, 2, 5],
+            learners: vec![7],
+            meta: None,
+        };
+        assert_eq!(Record::from_bytes(&record.to_bytes()).unwrap(), record);
+        assert!(
+            record.meta().refs.is_empty(),
+            "an absent state machine reads as empty"
+        );
+
+        // With a state machine, which is the case the object store holds: refs,
+        // a manifest carrying a stored layer and an inline one.
+        let mut meta = RepoMeta {
+            version: 4,
+            next_id: 2,
+            upload_gen: 1,
+            epoch: 3,
+            ..Default::default()
+        };
+        meta.refs.insert(
+            "refs/heads/main".to_string(),
+            Oid::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap(),
+        );
+        meta.layers = vec![
+            LayerMeta {
+                id: layer_id(9, 1),
+                objects: 2,
+                bytes: 40,
+                first_id: 0,
+                id_span: 2,
+                ..Default::default()
+            },
+            LayerMeta {
+                id: layer_id(10, 1),
+                objects: 1,
+                bytes: 5,
+                data: Some(bytes::Bytes::from_static(b"layer")),
+                first_id: 2,
+                id_span: 1,
+                ..Default::default()
+            },
+        ];
+        record.meta = Some(meta.clone());
+
+        let decoded = Record::from_bytes(&record.to_bytes()).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.meta(), meta);
+        assert!(
+            decoded
+                .meta()
+                .layers
+                .first()
+                .is_some_and(LayerMeta::is_stored),
+            "a layer with no bytes is the stored one"
+        );
+        assert!(
+            decoded
+                .meta()
+                .layers
+                .get(1)
+                .is_some_and(|inline| inline.end_id() == 3),
+            "an inline layer keeps its id range"
+        );
+    }
+
+    /// A corrupt record is refused, not guessed at: a node that read one as
+    /// empty would host a repository with no refs, and answer a clone with
+    /// an empty repository rather than an error.
+    #[test]
+    fn a_corrupt_record_is_refused() {
+        let record = Record {
+            repo: "acme".to_string(),
+            epoch: 1,
+            index: 2,
+            ..Default::default()
+        };
+        let stored = record.to_bytes();
+
+        // Protobuf's rule, worth pinning because it is the one input that is
+        // not an error: an empty message is every field's default.
+        assert_eq!(Record::from_bytes(&[]).unwrap(), Record::default());
+
+        // Refused for being cut short, which is what a partial write leaves,
+        // and reported against the record rather than as a bare failure.
+        for cut in [1, 2, stored.len() - 1] {
+            let err = Record::from_bytes(&stored[..cut]).unwrap_err();
+            assert!(
+                err.to_string().contains("Record"),
+                "{cut} of {} bytes: {err}",
+                stored.len()
+            );
+        }
+
+        // And refused for a tag whose wire type is one no decoder accepts,
+        // which is what a byte written over one leaves.
+        let mut invented = stored.to_vec();
+        invented[0] = 0xff;
+        let err = Record::from_bytes(&invented).unwrap_err();
+        assert!(err.to_string().contains("wire type"), "{err}");
+    }
 
     /// The sweep reads a trash path back to find the layer files it names, so
     /// the two have to agree. An epoch is padded to sixteen hex digits so that
