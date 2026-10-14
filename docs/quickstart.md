@@ -1,162 +1,185 @@
 # Quickstart
 
-This guide runs Enroute from the published image, creates a repository over
-gRPC, and shows what a Git push needs. You need Docker, Git, and [`grpcurl`].
-You do not need a source checkout.
+This guide runs Enroute on your machine, pushes a repository to it, and reads
+the repository back. You need Git and the `enroute` binary.
 
-[`grpcurl`]: https://github.com/fullstorydev/grpcurl
+## Install
 
-## Create the project
-
-Make a directory with a `config` subdirectory:
+On Linux or macOS, run the installer:
 
 ```sh
-mkdir -p enroute-local/config && cd enroute-local
+curl -fsSL https://enroute.sh/install | sh
 ```
 
-Create `compose.yaml`. It starts Postgres and the published image:
+It downloads the latest release for your platform, checks it against
+`SHA256SUMS`, and puts `enroute` in `~/.local/bin`. To install a different
+release, set `ENROUTE_VERSION`, for example `0.3.0`. To install to a
+different directory, set `ENROUTE_INSTALL_DIR`. Pass the variables to `sh`:
 
-```yaml
-services:
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: enroute
-      POSTGRES_PASSWORD: enroute
-      POSTGRES_DB: enroute
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U enroute -d enroute"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-    volumes: ["pgdata:/var/lib/postgresql/data"]
-
-  enroute:
-    image: ghcr.io/enroute-sh/enroute:latest
-    command: ["--config=file:///etc/enroute/enroute.toml"]
-    ports: ["8080:8080", "50051:50051"]
-    volumes:
-      - "objects:/data"
-      - "./config:/etc/enroute:ro"
-    extra_hosts: ["host.docker.internal:host-gateway"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-volumes:
-  pgdata:
-  objects:
+```sh
+curl -fsSL https://enroute.sh/install | ENROUTE_VERSION=0.3.0 sh
 ```
 
-Create `config/enroute.toml`:
+You can also download the archive for your platform from the
+[releases page](https://github.com/enroute-sh/enroute/releases), and put
+`enroute` on your `PATH`:
 
-```toml
-[bucket]
-uri = "file:///data/objects"
+| Platform | Archive |
+| --- | --- |
+| Linux, x86-64 | `enroute-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux, ARM64 | `enroute-<version>-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS, Apple silicon | `enroute-<version>-aarch64-apple-darwin.tar.gz` |
 
-[database]
-url = "postgres://enroute:enroute@postgres:5432/enroute"
-
-[hooks]
-# Where your application answers hooks.
-endpoint_url = "http://host.docker.internal:3000/api/enroute/hooks"
-# The public test key from RFC 9421. Generate your own key for any other use.
-signing_key = """
------BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIJ+DYvh6SEqVTm50DFtMDoQikTmiCqirVv9mWG9qfSnF
------END PRIVATE KEY-----
-"""
-
-[ingest.local]
-scratch = "file:///data/scratch"
+```sh
+tar -xzf enroute-<version>-<target>.tar.gz
+sudo install enroute-<version>-<target>/enroute /usr/local/bin/
 ```
 
-`endpoint_url` is the HTTP route that will answer hooks. Nothing has to be
-listening there yet.
+`SHA256SUMS` on the same page has the checksum of each archive. The Linux
+binaries need glibc 2.36 or later. The macOS binary is not signed. If you
+download it with a browser, macOS blocks it. To let it run, enter
+`xattr -d com.apple.quarantine /usr/local/bin/enroute`.
+
+For a different platform, build `enroute` from a checkout of the repository.
+You need Rust:
+
+```sh
+cargo install --path .
+```
+
+You can also [run the published image](#run-the-image).
 
 ## Start Enroute
 
 ```sh
-docker compose up -d
+enroute dev
 ```
 
-Enroute creates its database tables at startup. Git listens on port `8080`.
-The API listens on port `50051`.
+`enroute dev` runs one node with a generated configuration. It keeps its data
+in `./.enroute/dev`, and writes a `.gitignore` in `./.enroute` so that Git
+ignores it.
 
-## Create a repository
+```text
 
-The API authenticates nobody, and this stack puts nothing in front of it. That
-is fine on a laptop; in a deployment, keep the port reachable only by your
-application. See [Security](operate/security.md).
+enroute dev is running. Press Ctrl-C to stop.
 
-You choose the repository key. Use an id your application already allocated
-and will never change, not a name a user can rename:
+  git      http://127.0.0.1:8080
+  api      http://127.0.0.1:50051
+  dir      /home/you/project/.enroute/dev
+  hooks    off (every request may read and push; pass --hooks URL to opt in)
+
+Try:
+  git push http://127.0.0.1:8080/hello.git main
+  enroute repo list
+```
+
+All listeners bind to `127.0.0.1`. To bind Git and the API to a different
+address, use `--host`. No hook is enabled, so every request may read and push.
+
+## Push a repository
+
+In another terminal, make a repository and push it:
 
 ```sh
-grpcurl -plaintext \
-  -d '{"repo": {"key": "repo-4f2a1c"}}' \
-  127.0.0.1:50051 enroute.api.v1alpha1.RepositoryService/CreateRepository
+git init -b main hello && cd hello
+echo "# hello" > README.md
+git add README.md && git commit -m "First commit"
+git push http://127.0.0.1:8080/hello.git main
 ```
 
-The call is idempotent. Run it twice and you get the same repository, so a
-retry needs no bookkeeping. See
-[Repository keys](reference/the-contract.md#repository-keys) for the rules a key
-must follow.
+The push creates the repository. Its key is the URL path without `.git`:
+`hello`. See [Repository keys](reference/the-contract.md#repository-keys).
 
-Read the repository back, and list every repository this Enroute holds:
+List the repositories:
 
 ```sh
-grpcurl -plaintext \
-  -d '{"repo": {"key": "repo-4f2a1c"}}' \
-  127.0.0.1:50051 enroute.api.v1alpha1.RepositoryService/GetRepository
-
-grpcurl -plaintext \
-  127.0.0.1:50051 enroute.api.v1alpha1.RepositoryService/ListRepositories
+enroute repo list
 ```
 
-The API works with no application connected. Git does not, which the next
-section explains.
+## Read it back
 
-## Serve it over Git
-
-Enroute does not know which URL names which repository, and it does not know
-who may push. It asks your application through the `authorize` hook on every
-Git request. Until an endpoint answers that hook, every Git request fails.
-
-Your endpoint receives one `POST` per hook at `hooks.endpoint_url`.
-For a push of `http://127.0.0.1:8080/acme/widgets.git`, the `authorize` call
-carries the path `acme/widgets.git`. Your application looks that path up in its
-own tables and answers with the repository key, `repo-4f2a1c`. The URL and the
-key are separate: a path can change, but a key stays stable.
-
-Two ways to get an endpoint:
-
-- Follow [Build a code hosting platform](build/README.md) to create a client
-  and hook endpoint.
-
-Edit `hooks.endpoint_url` to match where your endpoint listens, then run
-`docker compose restart enroute`: configuration is read once, at startup.
-
-With an endpoint that grants access, this push lands:
+Clone the repository:
 
 ```sh
-git init widgets && cd widgets
-git commit --allow-empty -m "first"
-git remote add origin http://127.0.0.1:8080/acme/widgets.git
-git push origin main
+git clone http://127.0.0.1:8080/hello.git hello-copy
 ```
 
-## Reset
+Make a commit without a checkout. This calls `CreateCommit` on the API, as
+your application does:
 
 ```sh
-docker compose down -v
+enroute commit hello --branch main -m "Add notes" \
+  --author "You <you@example.com>" --put notes.md="hello"
 ```
 
-This removes the database and object volumes. Your configuration files stay.
+Run `git pull` in `hello-copy` to get the commit.
+
+The `repo`, `refs`, and `commit` commands call the gRPC API. To call it
+directly, use a gRPC client such as [`grpcurl`]. The server answers
+reflection.
+
+[`grpcurl`]: https://github.com/fullstorydev/grpcurl
+
+## Opt in to hooks
+
+Hooks let your application decide who may read and push. Every hook is
+opt-in. Stop `enroute dev` with Ctrl-C, and start it with a hook URL:
+
+```sh
+enroute dev --hooks http://localhost:3000/api/enroute/hooks --enable authorize
+```
+
+On the first run, Enroute generates a signing key and keeps it in
+`.enroute/dev`. The banner prints the public key, its key ID, and the path of
+`hooks-signing-key.pub.pem`. Your application verifies each hook with this
+public key. See [Verify the signature](reference/verify-the-signature.md).
+
+With `authorize` enabled, Enroute asks your application about every Git
+request. Your application maps the URL to a repository key, identifies the
+caller, and grants or denies access. Until an endpoint answers at that URL,
+every Git request fails. Leave out `--enable` to enable all four hooks.
+
+To build the endpoint, follow
+[Build a code-hosting application](build/README.md). For every field, see the
+[hook reference](reference/hooks.md).
+
+## Run the image
+
+You can run `enroute dev` from the published image instead of a local build.
+Replace `<version>` with a release, for example `0.3.0`:
+
+```sh
+docker run --rm -p 8080:8080 -p 50051:50051 -v enroute-dev:/data \
+  ghcr.io/enroute-sh/enroute:<version> dev --dir /data --host 0.0.0.0
+```
+
+`--host 0.0.0.0` binds Git and the API to all interfaces in the container,
+because the host cannot reach the loopback address of a container. With no
+`authorize` hook, Enroute logs a warning that anyone who can reach Git can
+read and push. Publish the ports only to a machine that you trust. The
+`enroute-dev` volume keeps the data. To delete the data, run
+`docker volume rm enroute-dev`.
+
+To send hooks to an application on the host, add a hook URL that names
+`host.docker.internal`:
+
+```sh
+docker run --rm -p 8080:8080 -p 50051:50051 -v enroute-dev:/data \
+  --add-host=host.docker.internal:host-gateway \
+  ghcr.io/enroute-sh/enroute:<version> dev --dir /data --host 0.0.0.0 \
+  --hooks http://host.docker.internal:3000/api/enroute/hooks --enable authorize
+```
+
+`--add-host` is necessary on Linux. Docker Desktop resolves
+`host.docker.internal` without it.
+
+The public signing key is in the volume, at
+`/data/hooks-signing-key.pub.pem`. The banner prints the public key. If the container runs in the background, read
+the banner with `docker logs <container>`.
 
 ## Next steps
 
-- [Build a code hosting application](build/README.md) — build an application
+- [Build a code-hosting application](build/README.md) — build an application
   on Enroute.
 - [Hook reference](reference/hooks.md) — every field of every hook, with
   payloads.

@@ -4,10 +4,9 @@
 //! objects, so the whole update is a ref move with no packfile anywhere in it.
 
 use enroute_api::api::v1alpha1::RefUpdate;
-use enroute_git_test_support::linear_commit;
 
 use crate::contract::{Client, hex, oid};
-use crate::support::seed_pack;
+use crate::support::Scratch;
 
 use super::support::{absent_oid, hook_backed_repo, pushed_repo, status_of};
 
@@ -44,17 +43,18 @@ async fn refs_carry_when_they_last_moved() {
 /// onto them by a call that carries none.
 #[tokio::test]
 async fn a_ref_moves_onto_stored_objects() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
     // Two commits, so the second move is a real fast-forward rather than
     // another create.
-    let first = linear_commit(b"one\n", None, 1, "first");
-    let second = linear_commit(b"two\n", Some(&first.commit_sha), 2, "second");
+    let first = scratch.commit(b"one\n", None, "first").await;
+    let second = scratch.commit(b"two\n", Some(&first), "second").await;
 
     // Everything arrives on the branch, as a push would put it there.
     // Trunk is untouched, and every object trunk will later need is now in
     // permanent storage.
-    seed_pack(&state, BRANCH, &[&first, &second]).await;
+    stack.seed(&repo, BRANCH, &scratch, &second).await;
 
     // Creating trunk at the first commit.
     let outcomes = client
@@ -63,7 +63,7 @@ async fn a_ref_moves_onto_stored_objects() {
             vec![RefUpdate {
                 refname: TRUNK.to_string(),
                 old_object_id: None,
-                new_object_id: oid(first.commit_sha.clone()),
+                new_object_id: oid(first.oid.clone()),
             }],
         )
         .await
@@ -74,7 +74,7 @@ async fn a_ref_moves_onto_stored_objects() {
     );
     assert_eq!(
         tip(&client, &repo, TRUNK).await.as_deref(),
-        Some(first.commit_sha.as_str())
+        Some(first.oid.as_str())
     );
 
     // And the fast-forward itself, guarded on where trunk was — the compare-
@@ -84,8 +84,8 @@ async fn a_ref_moves_onto_stored_objects() {
             &repo,
             vec![RefUpdate {
                 refname: TRUNK.to_string(),
-                old_object_id: oid(first.commit_sha.clone()),
-                new_object_id: oid(second.commit_sha.clone()),
+                old_object_id: oid(first.oid.clone()),
+                new_object_id: oid(second.oid.clone()),
             }],
         )
         .await
@@ -96,7 +96,7 @@ async fn a_ref_moves_onto_stored_objects() {
     );
     assert_eq!(
         tip(&client, &repo, TRUNK).await.as_deref(),
-        Some(second.commit_sha.as_str()),
+        Some(second.oid.as_str()),
         "trunk has to be where the merge put it"
     );
 }
@@ -107,10 +107,11 @@ async fn a_ref_moves_onto_stored_objects() {
 /// its own and a tag with nothing.
 #[tokio::test]
 async fn a_tip_that_is_not_stored_is_refused() {
-    let (_state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (_stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
     // Never pushed anywhere, so the repository has never seen it.
-    let stranger = linear_commit(b"unsent\n", None, 1, "unsent");
+    let stranger = scratch.commit(b"unsent\n", None, "unsent").await;
 
     for refname in [TRUNK, "refs/tags/v1"] {
         let outcomes = client
@@ -119,7 +120,7 @@ async fn a_tip_that_is_not_stored_is_refused() {
                 vec![RefUpdate {
                     refname: refname.to_string(),
                     old_object_id: None,
-                    new_object_id: oid(stranger.commit_sha.clone()),
+                    new_object_id: oid(stranger.oid.clone()),
                 }],
             )
             .await
@@ -144,12 +145,13 @@ async fn a_tip_that_is_not_stored_is_refused() {
 /// as "trunk moved, try again", so it must refuse rather than overwrite.
 #[tokio::test]
 async fn a_stale_old_id_is_refused() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let first = linear_commit(b"one\n", None, 1, "first");
-    let second = linear_commit(b"two\n", Some(&first.commit_sha), 2, "second");
+    let first = scratch.commit(b"one\n", None, "first").await;
+    let second = scratch.commit(b"two\n", Some(&first), "second").await;
 
-    seed_pack(&state, TRUNK, &[&first, &second]).await;
+    stack.seed(&repo, TRUNK, &scratch, &second).await;
 
     // Trunk is at `second`; this asks as though it were still at `first`.
     let outcomes = client
@@ -157,8 +159,8 @@ async fn a_stale_old_id_is_refused() {
             &repo,
             vec![RefUpdate {
                 refname: TRUNK.to_string(),
-                old_object_id: oid(first.commit_sha.clone()),
-                new_object_id: oid(first.commit_sha.clone()),
+                old_object_id: oid(first.oid.clone()),
+                new_object_id: oid(first.oid.clone()),
             }],
         )
         .await
@@ -170,7 +172,7 @@ async fn a_stale_old_id_is_refused() {
     );
     assert_eq!(
         tip(&client, &repo, TRUNK).await.as_deref(),
-        Some(second.commit_sha.as_str()),
+        Some(second.oid.as_str()),
         "and must not have moved trunk"
     );
 }
@@ -181,22 +183,23 @@ async fn a_stale_old_id_is_refused() {
 /// `force`. What to do with the answer stays the application's.
 #[tokio::test]
 async fn ancestry_is_answered_and_not_enforced() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let first = linear_commit(b"one\n", None, 1, "first");
-    let second = linear_commit(b"two\n", Some(&first.commit_sha), 2, "second");
-    seed_pack(&state, TRUNK, &[&first, &second]).await;
+    let first = scratch.commit(b"one\n", None, "first").await;
+    let second = scratch.commit(b"two\n", Some(&first), "second").await;
+    stack.seed(&repo, TRUNK, &scratch, &second).await;
 
     assert!(
         client
-            .is_ancestor(&repo, &first.commit_sha, &second.commit_sha)
+            .is_ancestor(&repo, &first.oid, &second.oid)
             .await
             .unwrap(),
         "the second commit descends from the first"
     );
     assert!(
         !client
-            .is_ancestor(&repo, &second.commit_sha, &first.commit_sha)
+            .is_ancestor(&repo, &second.oid, &first.oid)
             .await
             .unwrap(),
         "and the first does not descend from the second"
@@ -209,8 +212,8 @@ async fn ancestry_is_answered_and_not_enforced() {
             &repo,
             vec![RefUpdate {
                 refname: TRUNK.to_string(),
-                old_object_id: oid(second.commit_sha.clone()),
-                new_object_id: oid(first.commit_sha.clone()),
+                old_object_id: oid(second.oid.clone()),
+                new_object_id: oid(first.oid.clone()),
             }],
         )
         .await
@@ -218,7 +221,7 @@ async fn ancestry_is_answered_and_not_enforced() {
     assert_eq!(outcomes[0].rejection, None, "{outcomes:?}");
     assert_eq!(
         tip(&client, &repo, TRUNK).await.as_deref(),
-        Some(first.commit_sha.as_str())
+        Some(first.oid.as_str())
     );
 }
 
@@ -239,7 +242,7 @@ async fn tip(client: &Client, repo: &str, refname: &str) -> Option<String> {
 /// true before anything is pushed to it.
 #[tokio::test]
 async fn an_empty_repository_lists_no_refs() {
-    let (_state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (_stack, client, repo) = hook_backed_repo(TRUNK).await;
 
     let listed = client.list_refs(&repo).await.unwrap();
     assert!(listed.refs.is_empty(), "{:?}", listed.refs);
@@ -250,17 +253,18 @@ async fn an_empty_repository_lists_no_refs() {
 /// without reading every tag in the repository.
 #[tokio::test]
 async fn a_prefix_narrows_the_listing() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let commit = linear_commit(b"one\n", None, 1, "first");
-    seed_pack(&state, TRUNK, &[&commit]).await;
+    let commit = scratch.commit(b"one\n", None, "first").await;
+    stack.seed(&repo, TRUNK, &scratch, &commit).await;
     let landed = client
         .update_refs(
             &repo,
             vec![RefUpdate {
                 refname: "refs/tags/v1".to_string(),
                 old_object_id: None,
-                new_object_id: oid(commit.commit_sha.clone()),
+                new_object_id: oid(commit.oid.clone()),
             }],
         )
         .await
@@ -305,12 +309,13 @@ async fn a_prefix_narrows_the_listing() {
 /// about that ref rather than a failure of the call.
 #[tokio::test]
 async fn several_refs_move_in_one_call() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let first = linear_commit(b"one\n", None, 1, "first");
-    let second = linear_commit(b"two\n", Some(&first.commit_sha), 2, "second");
-    seed_pack(&state, BRANCH, &[&first, &second]).await;
-    let stranger = linear_commit(b"unsent\n", None, 3, "unsent");
+    let first = scratch.commit(b"one\n", None, "first").await;
+    let second = scratch.commit(b"two\n", Some(&first), "second").await;
+    stack.seed(&repo, BRANCH, &scratch, &second).await;
+    let stranger = scratch.commit(b"unsent\n", None, "unsent").await;
 
     let outcomes = client
         .update_refs(
@@ -319,17 +324,17 @@ async fn several_refs_move_in_one_call() {
                 RefUpdate {
                     refname: TRUNK.to_string(),
                     old_object_id: None,
-                    new_object_id: oid(second.commit_sha.clone()),
+                    new_object_id: oid(second.oid.clone()),
                 },
                 RefUpdate {
                     refname: "refs/heads/nope".to_string(),
                     old_object_id: None,
-                    new_object_id: oid(stranger.commit_sha.clone()),
+                    new_object_id: oid(stranger.oid.clone()),
                 },
                 RefUpdate {
                     refname: "refs/tags/v1".to_string(),
                     old_object_id: None,
-                    new_object_id: oid(first.commit_sha.clone()),
+                    new_object_id: oid(first.oid.clone()),
                 },
             ],
         )
@@ -347,25 +352,26 @@ async fn several_refs_move_in_one_call() {
 
     assert_eq!(
         tip(&client, &repo, TRUNK).await.as_deref(),
-        Some(second.commit_sha.as_str())
+        Some(second.oid.as_str())
     );
     assert_eq!(tip(&client, &repo, "refs/heads/nope").await, None);
     assert_eq!(
         tip(&client, &repo, "refs/tags/v1").await.as_deref(),
-        Some(first.commit_sha.as_str())
+        Some(first.oid.as_str())
     );
 }
 
 /// A ref is deleted by moving it to the null id, which is how git says it too.
 #[tokio::test]
 async fn a_ref_moved_to_the_null_id_is_deleted() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let commit = linear_commit(b"one\n", None, 1, "first");
-    seed_pack(&state, BRANCH, &[&commit]).await;
+    let commit = scratch.commit(b"one\n", None, "first").await;
+    stack.seed(&repo, BRANCH, &scratch, &commit).await;
     assert_eq!(
         tip(&client, &repo, BRANCH).await.as_deref(),
-        Some(commit.commit_sha.as_str())
+        Some(commit.oid.as_str())
     );
 
     let outcomes = client
@@ -373,7 +379,7 @@ async fn a_ref_moved_to_the_null_id_is_deleted() {
             &repo,
             vec![RefUpdate {
                 refname: BRANCH.to_string(),
-                old_object_id: oid(commit.commit_sha.clone()),
+                old_object_id: oid(commit.oid.clone()),
                 new_object_id: None,
             }],
         )
@@ -393,29 +399,30 @@ async fn a_ref_moved_to_the_null_id_is_deleted() {
 /// and an application asking about a stale commit gets `false`.
 #[tokio::test]
 async fn ancestry_answers_for_the_edges_too() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let commit = linear_commit(b"one\n", None, 1, "first");
-    seed_pack(&state, TRUNK, &[&commit]).await;
+    let commit = scratch.commit(b"one\n", None, "first").await;
+    stack.seed(&repo, TRUNK, &scratch, &commit).await;
     let absent = absent_oid();
 
     assert!(
         client
-            .is_ancestor(&repo, &commit.commit_sha, &commit.commit_sha)
+            .is_ancestor(&repo, &commit.oid, &commit.oid)
             .await
             .unwrap(),
         "a commit descends from itself"
     );
     assert!(
         !client
-            .is_ancestor(&repo, &absent, &commit.commit_sha)
+            .is_ancestor(&repo, &absent, &commit.oid)
             .await
             .unwrap(),
         "a commit nobody pushed is nobody's ancestor"
     );
     assert!(
         !client
-            .is_ancestor(&repo, &commit.commit_sha, &absent)
+            .is_ancestor(&repo, &commit.oid, &absent)
             .await
             .unwrap(),
         "and nothing descends from it either"
@@ -425,10 +432,11 @@ async fn ancestry_answers_for_the_edges_too() {
 /// A malformed object id in an update is refused before anything moves.
 #[tokio::test]
 async fn a_malformed_id_in_an_update_moves_nothing() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
-    let commit = linear_commit(b"one\n", None, 1, "first");
-    seed_pack(&state, BRANCH, &[&commit]).await;
+    let commit = scratch.commit(b"one\n", None, "first").await;
+    stack.seed(&repo, BRANCH, &scratch, &commit).await;
 
     let error = client
         .update_refs(
@@ -437,7 +445,7 @@ async fn a_malformed_id_in_an_update_moves_nothing() {
                 RefUpdate {
                     refname: TRUNK.to_string(),
                     old_object_id: None,
-                    new_object_id: oid(commit.commit_sha.clone()),
+                    new_object_id: oid(commit.oid.clone()),
                 },
                 RefUpdate {
                     refname: "refs/heads/other".to_string(),

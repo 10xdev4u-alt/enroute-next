@@ -4,17 +4,18 @@
 //! Asymmetric, so Enroute holds a private key and an application holds only the
 //! public half — an application can check a call and cannot make one, so a
 //! leaked public key forges nothing. A standard rather than something of ours,
-//! since the far
-//! end is meant to be any language: RFC 9421 already has verifying libraries in
-//! most of them. Both ends live in this one crate, as with the ingest
-//! protocol's wire types, because a scheme that disagrees by one byte fails at
-//! runtime, on the call that mattered.
+//! since the far end is meant to be any language: RFC 9421 already has
+//! verifying libraries in most of them. Both ends live in this one crate, as
+//! with the ingest protocol's wire types, because a scheme that disagrees by
+//! one byte fails at runtime, on the call that mattered.
 //!
 //! [rfc9421]: https://www.rfc-editor.org/rfc/rfc9421.html
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use ed25519_dalek::pkcs8::{DecodePrivateKey as _, DecodePublicKey as _};
+use ed25519_dalek::pkcs8::{
+    DecodePrivateKey as _, DecodePublicKey as _, EncodePrivateKey as _, EncodePublicKey as _,
+};
 use ed25519_dalek::{Signer as _, Verifier as _};
 use http::HeaderMap;
 use sha2::{Digest as _, Sha256};
@@ -28,6 +29,9 @@ const LABEL: &str = "sig1";
 /// Checked, not merely read: an accepted caller-sent list would let one
 /// drop `content-digest` and sign a set that says nothing about the body.
 const COVERED: &str = r#"("@method" "@authority" "@path" "content-digest")"#;
+
+/// The names in [`COVERED`].
+const COMPONENTS: [&str; 4] = ["@method", "@authority", "@path", "content-digest"];
 
 /// How far a call's `created` may be from now, kept generous since a false
 /// rejection here refuses a git push.
@@ -92,6 +96,28 @@ impl SigningKey {
         Ok(Self { inner, keyid })
     }
 
+    /// The key that the 32-byte `seed` makes.
+    ///
+    /// The caller supplies the randomness, so this crate needs no RNG.
+    #[must_use]
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        let inner = ed25519_dalek::SigningKey::from_bytes(seed);
+        let keyid = thumbprint(&inner.verifying_key());
+        Self { inner, keyid }
+    }
+
+    /// This key as a PKCS#8 PEM, which [`SigningKey::from_pem`] reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key does not encode.
+    pub fn to_pem(&self) -> Result<String, KeyError> {
+        self.inner
+            .to_pkcs8_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF)
+            .map(|pem| pem.to_string())
+            .map_err(|_bad| KeyError)
+    }
+
     /// The public half, to hand to whoever verifies.
     #[must_use]
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -121,6 +147,17 @@ impl VerifyingKey {
             ed25519_dalek::VerifyingKey::from_public_key_pem(pem).map_err(|_bad| KeyError)?;
         let keyid = thumbprint(&inner);
         Ok(Self { inner, keyid })
+    }
+
+    /// This key as a SPKI PEM, which [`VerifyingKey::from_pem`] reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the key does not encode.
+    pub fn to_pem(&self) -> Result<String, KeyError> {
+        self.inner
+            .to_public_key_pem(ed25519_dalek::pkcs8::spki::der::pem::LineEnding::LF)
+            .map_err(|_bad| KeyError)
     }
 
     /// This key's id: its [RFC 7638] JWK thumbprint.
@@ -203,21 +240,32 @@ pub fn verify(
     headers: &HeaderMap,
     now_unix_secs: u64,
 ) -> Result<(), Error> {
-    let input = header(headers, SIGNATURE_INPUT_HEADER)?;
-    let (label, params) = input.split_once('=').ok_or(Error::Malformed("no label"))?;
+    // Parsed, not split: a proxy may add its own label, and its members must
+    // not leak into ours.
+    let inputs: sfv::Dictionary = parse(headers, SIGNATURE_INPUT_HEADER)?;
+    let lists = inputs.iter().filter_map(|(label, entry)| match entry {
+        sfv::ListEntry::InnerList(list) => Some((label, list)),
+        sfv::ListEntry::Item(_) => None,
+    });
+    let (label, list) = lists
+        .clone()
+        .find(|(_, list)| covers_ours(list))
+        .ok_or_else(|| {
+            Error::Coverage(
+                lists
+                    .map(|(_, list)| serialize(list))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        })?;
 
-    let (components, rest) = params
-        .split_once(')')
-        .ok_or(Error::Malformed("no component list"))?;
-    let components = format!("{components})");
-    if components != COVERED {
-        return Err(Error::Coverage(components));
-    }
-
-    let created: u64 = param(rest, "created")
-        .ok_or(Error::Malformed("no created"))?
-        .parse()
-        .map_err(|_not_a_number| Error::Malformed("created is not unix seconds"))?;
+    let created = list
+        .params
+        .get("created")
+        .and_then(sfv::BareItem::as_integer)
+        .ok_or(Error::Malformed("no created"))?;
+    let created = u64::try_from(i64::from(created))
+        .map_err(|_negative| Error::Malformed("created is not unix seconds"))?;
     let skew = now_unix_secs.abs_diff(created);
     if skew > MAX_SKEW_SECS {
         return Err(Error::Skewed(skew));
@@ -225,15 +273,17 @@ pub fn verify(
 
     // The algorithm comes from the key, never from the message. An `alg` a
     // caller chose is how a signature scheme gets talked down to one the caller
-    // can application, so nothing here reads it.
-    let keyid = param(rest, "keyid")
+    // can forge, so nothing here reads it.
+    let keyid = list
+        .params
+        .get("keyid")
+        .and_then(sfv::BareItem::as_string)
         .ok_or(Error::Malformed("no keyid"))?
-        .trim_matches('"')
-        .to_string();
+        .as_str();
     let key = keys
         .iter()
         .find(|key| key.keyid == keyid)
-        .ok_or(Error::UnknownKey(keyid))?;
+        .ok_or_else(|| Error::UnknownKey(keyid.to_string()))?;
 
     // Recomputed rather than read: the digest is what ties the signature to
     // this body, so a signature over somebody else's digest must not pass.
@@ -242,16 +292,16 @@ pub fn verify(
         return Err(Error::Digest);
     }
 
-    let presented = header(headers, SIGNATURE_HEADER)?
-        .strip_prefix(&format!("{label}=:"))
-        .and_then(|rest| rest.strip_suffix(':'))
-        .ok_or(Error::Malformed("signature is not a byte sequence"))?;
-    let presented = STANDARD.decode(presented).map_err(|_bad| Error::Mismatch)?;
-    let presented: [u8; 64] = presented
-        .try_into()
-        .map_err(|_wrong_size| Error::Mismatch)?;
+    let signatures: sfv::Dictionary = parse(headers, SIGNATURE_HEADER)?;
+    let presented: [u8; 64] = match signatures.get(label) {
+        Some(sfv::ListEntry::Item(item)) => item.bare_item.as_byte_sequence(),
+        _ => None,
+    }
+    .ok_or(Error::Malformed("signature is not a byte sequence"))?
+    .try_into()
+    .map_err(|_wrong_size| Error::Mismatch)?;
 
-    let base = signature_base(covered, digest, &format!("{components}{rest}"));
+    let base = signature_base(covered, digest, &serialize(list));
     key.inner
         .verify(
             base.as_bytes(),
@@ -308,12 +358,36 @@ fn lines_to_base(lines: &[(&str, &str)], params: &str) -> String {
     base
 }
 
-/// One `;name=value` parameter out of an RFC 9421 parameter string.
-fn param<'a>(params: &'a str, name: &str) -> Option<&'a str> {
-    params.split(';').find_map(|part| {
-        let (key, value) = part.split_once('=')?;
-        (key.trim() == name).then_some(value)
-    })
+/// Whether `list` names exactly the components in [`COVERED`], in order.
+fn covers_ours(list: &sfv::InnerList) -> bool {
+    list.items.len() == COMPONENTS.len()
+        && list.items.iter().zip(COMPONENTS).all(|(item, name)| {
+            item.params.is_empty()
+                && item.bare_item.as_string().map(sfv::StringRef::as_str) == Some(name)
+        })
+}
+
+/// `list` as RFC 9421 puts it in the signature base.
+fn serialize(list: &sfv::InnerList) -> String {
+    let mut out = sfv::ListSerializer::new();
+    out.members([&sfv::ListEntry::InnerList(list.clone())]);
+    out.finish().unwrap_or_default()
+}
+
+/// A dictionary header. Several field lines combine into one value, as RFC
+/// 9651 says.
+fn parse(headers: &HeaderMap, name: &'static str) -> Result<sfv::Dictionary, Error> {
+    let lines = headers
+        .get_all(name)
+        .iter()
+        .map(|value| value.to_str().map_err(|_bad| Error::MissingHeader(name)))
+        .collect::<Result<Vec<_>, _>>()?;
+    if lines.is_empty() {
+        return Err(Error::MissingHeader(name));
+    }
+    sfv::Parser::new(&lines.join(", "))
+        .parse()
+        .map_err(|_bad| Error::Malformed("not a structured field dictionary"))
 }
 
 fn header<'a>(headers: &'a HeaderMap, name: &'static str) -> Result<&'a str, Error> {
@@ -350,6 +424,19 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_pem(TEST_KEY).expect("a pkcs8 ed25519 key")
+    }
+
+    #[test]
+    fn a_key_encodes_to_the_pem_it_reads() {
+        let key = key();
+        // PKCS#8 v2, with the public key, so compare what it reads back as.
+        let again = SigningKey::from_pem(&key.to_pem().unwrap()).unwrap();
+        assert_eq!(again.keyid(), key.keyid());
+        assert_eq!(key.verifying_key().to_pem().unwrap(), TEST_PUBLIC_KEY);
+
+        let seeded = SigningKey::from_seed(&[7; 32]);
+        let again = SigningKey::from_pem(&seeded.to_pem().unwrap()).unwrap();
+        assert_eq!(again.keyid(), seeded.keyid());
     }
 
     fn covered(body: &[u8]) -> Covered<'_> {
@@ -410,6 +497,41 @@ mod tests {
         let headers = signed(&key, &covered(b"body"), NOW);
         verify(&[key.verifying_key()], &covered(b"body"), &headers, NOW)
             .expect("a freshly signed call verifies");
+    }
+
+    /// A proxy may sign the same request under its own label, before or after
+    /// ours, and in the same field line or its own.
+    #[test]
+    fn another_label_does_not_hide_ours() {
+        let key = key();
+        let ours = signed(&key, &covered(b"body"), NOW);
+        let input = ours[SIGNATURE_INPUT_HEADER].to_str().unwrap();
+        let signature = ours[SIGNATURE_HEADER].to_str().unwrap();
+        let theirs_input = r#"proxy=("@method");created=1;keyid="proxy-key""#;
+        let theirs_signature = "proxy=:AAAA:";
+
+        for (input, signature) in [
+            (
+                format!("{input}, {theirs_input}"),
+                format!("{signature}, {theirs_signature}"),
+            ),
+            (
+                format!("{theirs_input}, {input}"),
+                format!("{theirs_signature}, {signature}"),
+            ),
+        ] {
+            let mut headers = ours.clone();
+            headers.insert(SIGNATURE_INPUT_HEADER, input.parse().unwrap());
+            headers.insert(SIGNATURE_HEADER, signature.parse().unwrap());
+            verify(&[key.verifying_key()], &covered(b"body"), &headers, NOW)
+                .expect("ours verifies beside another label");
+        }
+
+        let mut headers = ours.clone();
+        headers.append(SIGNATURE_INPUT_HEADER, theirs_input.parse().unwrap());
+        headers.append(SIGNATURE_HEADER, theirs_signature.parse().unwrap());
+        verify(&[key.verifying_key()], &covered(b"body"), &headers, NOW)
+            .expect("ours verifies beside another field line");
     }
 
     /// The point of doing this asymmetrically: holding the public half is

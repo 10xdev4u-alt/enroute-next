@@ -25,6 +25,10 @@ import "enroute/common/v1alpha1/common.proto";
 //
 // Unary, and small. Nothing here streams: a decision is a question and an
 // answer, and every runtime that can serve an HTTP request can serve one.
+//
+// Each call is opt-in: a deployment lists the calls to make in
+// `hooks.enabled`. For a call that is not listed, Enroute uses the default
+// that docs/reference/hooks.md gives.
 
 // ── the envelope ───────────────────────────────────────────────────────────
 
@@ -57,7 +61,9 @@ message HookResponse {
 
 // Which repository does this git request name, and who is asking?
 //
-// Asked once per git request, before anything is served. It carries the
+// When enabled, asked once per git request, before anything is served.
+// Without it, every request may read and write, and the URL path without
+// `.git` is the repository key. It carries the
 // request roughly as it arrived, because what a credential looks like and
 // what a path means are the application's business — Enroute cannot narrow
 // this to a parsed identity without deciding those first.
@@ -152,18 +158,18 @@ message Challenge {
 // ── pre-receive ────────────────────────────────────────────────────────────
 
 // Git's `pre-receive` hook, for a repository whose hooks live in another
-// process. The push has arrived, its objects are stored, and no ref has
-// moved. Which of these commands may land?
+// process. The push has arrived, and no ref has moved. Which of these
+// commands may land?
 //
-// The ordering is `receive-pack`'s own, and both halves of it matter.
-// `RefCommand.force` is an ancestry question whose answer does not exist
-// until the new commits do, and an application that wants to read what was
-// pushed can do so over the contract before it answers.
+// `RefCommand.force` is already answered from the pushed commits. The pushed
+// objects are readable over the contract during this call only when the
+// deployment sets `hooks.pre_receive_mode = "objects"`, which costs a second log
+// entry per push. Without it, a push whose every command is refused stores
+// nothing.
 //
 // This is where protected branches, merge queues, and "this branch needs a
-// review" live. Enroute holds no policy of its own and asks on every push: an
-// application with nothing to say allows every command, which is what having
-// no hook installed has always meant.
+// review" live. Enroute holds no policy of its own. When this call is enabled,
+// it asks on every push; without it, every command may land.
 message PreReceiveRequest {
   // The repository, as Enroute knows it. An application that keeps names
   // looks this up; an application that does not already has everything it

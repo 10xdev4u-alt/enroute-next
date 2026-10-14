@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 use super::Violation;
 use super::workspace::CrateRoot;
@@ -67,17 +67,10 @@ struct Declaration {
 }
 
 pub(crate) fn check(sources: &[(PathBuf, String)], crates: &[CrateRoot]) -> Vec<Violation> {
-    let mut parser = Parser::new();
-    if parser
-        .set_language(&tree_sitter_rust::LANGUAGE.into())
-        .is_err()
-    {
-        return vec![Violation {
-            file: PathBuf::from("<tree-sitter>"),
-            line: None,
-            message: "failed to load the Rust grammar".to_string(),
-        }];
-    }
+    let mut parser = match super::rust_parser() {
+        Ok(parser) => parser,
+        Err(violation) => return vec![violation],
+    };
 
     let mut declarations: Vec<Declaration> = Vec::new();
     let mut mentions: HashMap<String, Mentions> = HashMap::new();
@@ -96,10 +89,16 @@ pub(crate) fn check(sources: &[(PathBuf, String)], crates: &[CrateRoot]) -> Vec<
     for (file, source) in sources {
         let member = owning_crate(file, crates);
         let route = route(file, member, crates, &libraries);
+        // A module under `tests/` (such as `tests/common/mod.rs`) compiles
+        // into the test targets that declare it, never into the library.
         let krate = match route.target_root {
             Some(root) => {
                 let next = crates.len() + targets.len();
                 *targets.entry(root).or_insert(next)
+            }
+            None if route.in_tests => {
+                let next = crates.len() + targets.len();
+                *targets.entry(file.as_path()).or_insert(next)
             }
             None => member,
         };
@@ -683,6 +682,16 @@ mod tests {
         )]);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("make it `pub(crate)`"), "{found:?}");
+    }
+
+    #[test]
+    fn a_shared_integration_test_module_needs_it_public() {
+        let found = findings(&[
+            ("a/src/lib.rs", "pub fn helper() {}\nfn f() { helper() }"),
+            ("a/tests/common/mod.rs", "pub fn start() { helper() }"),
+            ("a/tests/it.rs", "mod common;\nfn t() { common::start() }"),
+        ]);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

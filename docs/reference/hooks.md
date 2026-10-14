@@ -1,10 +1,11 @@
 # Hook reference
 
 Enroute sends a signed HTTP `POST` to `hooks.endpoint_url` whenever a Git
-request needs an application decision.
+request needs an application decision. It calls only the hooks that you
+enable.
 
 This reference lists each hook message and field. To implement an endpoint,
-follow [Build a code hosting application](../build/README.md).
+follow [Build a code-hosting application](../build/README.md).
 
 ## Transport
 
@@ -15,7 +16,7 @@ follow [Build a code hosting application](../build/README.md).
 | `Content-Type` | `application/x-protobuf` |
 | Request body | A binary `HookRequest` |
 | Success response | `200` with a binary `HookResponse` |
-| Timeout | `hooks.timeout_secs`, 10 seconds by default |
+| Timeout | `hooks.timeout`, 10 seconds by default |
 
 `HookRequest.call` is a `oneof` with four members, and it selects the call. Set
 the matching member of `HookResponse.answer`. Because the body selects the
@@ -24,10 +25,45 @@ call, your application mounts one route for all four.
 The messages are defined in `proto/enroute/hook/v1alpha1/hook.proto`, which
 declares no service. See [Protocol Buffers](proto.md).
 
+## Enable hooks
+
+Every hook is opt-in. Enroute calls only the hooks that `hooks.enabled` lists:
+
+```toml
+[hooks]
+enabled = ["authorize", "visible_refs", "pre_receive", "post_receive"]
+endpoint_url = "https://app.example.com/api/enroute/hooks"
+signing_key = "${ENROUTE_HOOK_SIGNING_KEY}"
+```
+
+List any subset. Enroute does not start if the list holds an unknown name.
+When `enabled` is not empty, `endpoint_url` and `signing_key` are required.
+Without `enabled`, Enroute calls no hook, even if you set `endpoint_url`.
+
+A hook that is not enabled takes its default:
+
+| Hook | Default when not enabled |
+| --- | --- |
+| `authorize` | Allow read and write. The repository key is the URL path without `.git`: `http://host:8080/acme/widgets.git` names `acme/widgets`. A path that is not a valid key is a `400`. |
+| `visible_refs` | Every ref is visible. |
+| `pre_receive` | Every command is allowed. |
+| `post_receive` | No call. |
+
+Each hook works alone. For example, enable only `pre_receive` to keep open
+access by path and still judge each push.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `hooks.pre_receive_mode` | `"commands"` | `"commands"` or `"objects"`. `"objects"` makes the pushed objects readable through the API during `pre_receive`, and each push then costs two log entries instead of one. Ignored unless `pre_receive` is enabled. Any other value is an error. See [Read the pushed objects](#read-the-pushed-objects). |
+
+If `authorize` is not enabled and the Git listener is not bound to a loopback
+address, Enroute logs a warning at startup. Anyone who can reach that listener
+can read and push. See [Security](../operate/security.md).
+
 ## Read the raw body
 
 The signature covers exactly the bytes that arrived, so a framework that
-parses, re-encodes, or normalises the body first breaks every call. Read the
+parses, re-encodes, or normalizes the body first breaks every call. Read the
 body once, and use the same bytes for the digest check and the protobuf decode.
 
 | Framework | Use |
@@ -109,10 +145,10 @@ Verify the signature before you read the body. See
 | --- | --- | --- |
 | [`authorize`](#authorize) | Which repository is this, and who is asking? | Once per Git request, before anything is served |
 | [`visible_refs`](#visible_refs) | Which of these refs may this caller see? | Before each ref advertisement |
-| [`pre_receive`](#pre_receive) | Which of these ref updates may land? | After a push is stored, before any ref moves |
+| [`pre_receive`](#pre_receive) | Which of these ref updates may land? | After a push arrives, before any ref moves |
 | [`post_receive`](#post_receive) | — | After the refs moved |
 
-Every call fails closed. If your endpoint returns a status other than `200`, an
+Every enabled call fails closed. If your endpoint returns a status other than `200`, an
 unreadable body, an empty `answer`, or nothing within the timeout, Enroute
 fails the Git request. A refusal is a field inside a `200` response, never a
 status code.
@@ -128,10 +164,11 @@ These appear in more than one call.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `key` | `string` | The key your application passed to `CreateRepository`. |
+| `key` | `string` | The key of the repository. Your application passed it to `CreateRepository`, or granted it to the push that created the repository. |
 
-A key is 1 to 256 bytes of ASCII letters, digits, `-`, `_`, and `.`, starting
-and ending with a letter or digit. Enroute compares keys byte for byte. See
+A key is at most 256 bytes, in one or more segments separated by `/`. Each
+segment holds ASCII letters, digits, `-`, `_`, and `.`, and starts and ends with
+a letter or digit. Enroute compares keys byte for byte. See
 [Repository keys](the-contract.md#repository-keys).
 
 ### `ObjectId`
@@ -375,12 +412,23 @@ To hide nothing, return the list you were sent.
 ## `pre_receive`
 
 Enroute asks which ref updates may land. This is Git's `pre-receive` hook for a
-repository whose hooks run in another process. The objects of the push are
-already stored, and no ref has moved.
+repository whose hooks run in another process. No ref has moved.
 
-Protected branches, merge queues, and review gates live here. Your application
-can read the pushed commits over the API before it answers, because the objects
-are already stored.
+Protected branches, merge queues, and review gates live here.
+
+### Read the pushed objects
+
+During the call, the pushed objects are readable through the API only when
+`hooks.pre_receive_mode = "objects"`.
+
+| `pre_receive_mode` | During the call | After a refusal of every command | Log entries per push |
+| --- | --- | --- | --- |
+| `"commands"` (default) | The API does not have the pushed objects. Decide from the request: `actor`, `refname`, the object IDs, and `force`. | Enroute stores nothing. | One |
+| `"objects"` | The API reads the pushed objects by ID on every node, for example with `ListCommits` or `DiffCommit`. | The objects stay stored. No ref names them. | Two |
+
+In both modes, `force` is correct and no ref has moved. Set the key to
+`"objects"` only if your policy reads the pushed commits, files, or diffs before it
+answers.
 
 ### `PreReceiveRequest`
 
@@ -396,7 +444,9 @@ cares *which* writer, not whether.
 
 `commands` excludes anything Enroute already refused on its own, such as a
 non-fast-forward or an object that never arrived. What you are sent is still
-live, so a judgement you return is never for something already dead.
+live, so a judgement you return is never for something already dead. In a push
+made with `git push --atomic`, one such refusal fails the whole push, and
+Enroute does not call `pre_receive`.
 
 #### `RefCommand`
 
@@ -417,7 +467,9 @@ Read the command type from which IDs are set:
 
 `force` answers what a hook running next to the repository would work out with
 `git merge-base --is-ancestor`. Enroute answers it because your endpoint holds
-no commit graph.
+no commit graph. Enroute peels annotated tags first. If Enroute cannot prove
+a fast-forward, for example because `newObjectId` is not a commit, `force` is
+true.
 
 > **Caution:** `force` is only ever true for a command that has both IDs, so a
 > delete arrives with `force` false. A rule that refuses a force-push and
@@ -454,6 +506,10 @@ refname judged more than once is refused if any of those judgements refuses it.
 
 `reason` reaches the client as the rejection message, the way a hook's stderr
 does. It is all the person gets, so name the ref and say what to do instead.
+
+**An allowed ref can still fail to land.** Another push can move the ref
+first. In an atomic push, a refusal of a different ref fails it too. Do not
+record an allow as a landing: `post_receive` tells you what landed.
 
 > **Note:** `UpdateRefs` on the API does not run this hook. There, the caller is
 > your own application.
@@ -518,8 +574,8 @@ are refused:
 }
 ```
 
-The person who pushed sees the following. Enroute offers a Git client no
-`atomic` capability, so the allowed ref lands even though two were refused:
+The person who pushed sees the following. The push is not atomic, so the
+allowed ref lands even though two were refused:
 
 ```text
 To http://127.0.0.1:8080/acme/widgets.git
@@ -528,6 +584,9 @@ To http://127.0.0.1:8080/acme/widgets.git
  ! [remote rejected] v1.2.0 -> v1.2.0 (release tags cannot be deleted)
 error: failed to push some refs to 'http://127.0.0.1:8080/acme/widgets.git'
 ```
+
+With `git push --atomic`, one refusal fails the whole push. No ref lands, and
+Git shows `atomic push failure` for each ref that you allowed.
 
 To allow everything, judge every command `JUDGEMENT_ALLOW`. That is what having
 no `pre-receive` hook installed has always meant.
@@ -630,7 +689,7 @@ check.
 | Condition | Result | Check |
 | --- | --- | --- |
 | Endpoint unreachable | Git request fails | Your endpoint is running, and `hooks.endpoint_url` points at it |
-| No answer within the timeout | Git request fails | `hooks.timeout_secs`, and slow lookups in your handler |
+| No answer within the timeout | Git request fails | `hooks.timeout`, and slow lookups in your handler |
 | Status other than `200` | Git request fails | Deny inside the body with a `200`, not with a status code |
 | Body is not a `HookResponse` | Git request fails | You set a member of `answer`, and you write binary protobuf |
 | `answer` is empty | Git request fails, except on `post_receive` | The `answer` member matches the `call` member |
@@ -641,7 +700,7 @@ check.
 
 ## See also
 
-- [Build a code hosting platform](../build/README.md) — write the endpoint that answers these
+- [Build a code-hosting application](../build/README.md) — write the endpoint that answers these
   calls.
 - [Verify the signature](verify-the-signature.md) — the check to run
   before you read a body.

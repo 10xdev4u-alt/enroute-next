@@ -35,17 +35,18 @@ reflection, so you can list the services with no proto files at all. The call
 below names the copied proto files instead, which works the same way:
 
 ```sh
-docker run --rm --network <compose-project>_default \
+docker run --rm --network container:enroute \
   -v "$PWD/proto:/proto:ro" fullstorydev/grpcurl:latest \
   -plaintext -import-path /proto -proto enroute/api/v1alpha1/repository.proto \
   -d '{"repo": {"key": "repo-4f2a1c"}}' \
-  enroute:50051 enroute.api.v1alpha1.RepositoryService/CreateRepository
+  127.0.0.1:50051 enroute.api.v1alpha1.RepositoryService/CreateRepository
 ```
 
-`<compose-project>` is the directory the stack was copied to. For
-`enroute-stack` the network is `enroute-stack_default`, unless `-p` was given.
-`docker network ls` shows it. A call from the user's code works the same way,
-and that is the point of phase 3.
+`--network container:enroute` shares the network of the `enroute` container
+from phase 2, so `127.0.0.1:50051` is Enroute. Under an installed
+`enroute dev`, `enroute repo create repo-4f2a1c` does the same with no
+container. A call from the user's code works the same way, and that is the
+point of phase 3.
 
 It answers:
 
@@ -61,25 +62,32 @@ It answers:
 |                     | `GetRepository`    | The default branch, and the last push time.                    |
 |                     | `ListRepositories` | Every repository here, or one `prefix`, in key order, a page at a time. |
 |                     | `DeleteRepository` | Nothing. Idempotent, and the storage is reclaimed later.       |
-| `RefService`        | `ListRefs`         | Every ref, or the ones under given prefixes.                   |
-|                     | `UpdateRefs`       | One outcome per update, atomically applied.                    |
+| `RefService`        | `ListRefs`         | Every ref, or the ones under given prefixes. `HEAD` is the separate `default_branch`. |
+|                     | `UpdateRefs`       | One outcome per update. Each lands or fails on its own.        |
 |                     | `IsAncestor`       | Whether one commit is in another's history.                    |
 | `ObjectService`     | `GetObject`        | A stream: one header, then the bytes.                          |
 |                     | `ListTree`         | A stream of paths under a commit or tree.                      |
 |                     | `ListCommits`      | A stream of commits, newest first, paged.                      |
 |                     | `DiffCommit`       | A stream of changed paths, as blob id pairs.                   |
-|                     | `FindMergeBases`   | Where two histories last agreed.                               |
-| `SyncService`       | `PushToRemote`     | One outcome per ref sent to another git server.                |
+|                     | `FindMergeBases`   | Where two histories last agreed, as a set, in no defined order.     |
+| `SyncService`       | `PushToRemote`     | One outcome per ref sent to another Git server.                |
+| `CommitService`     | `CreateCommit`     | The new commit on a branch, made from file changes.            |
 
 ## Rules that catch people out
 
 **A repository key is yours.** Enroute has no column for a name or an owner.
 It stores the key the application passed to `CreateRepository`, compares it
 byte for byte, and reads no meaning out of it. There is no id of Enroute's to
-keep beside the id the application already has. A key is 1 to 256 bytes of
-ASCII letters, digits, `-`, `_`, and `.`, starting and ending with a letter or
-digit. It holds no `/`. Use a row id, a UUID, or a ULID. Never `owner/name`,
-because a rename would then point at a different repository.
+keep beside the id the application already has. A key is at most 256 bytes,
+in one or more segments separated by `/`. Each segment holds ASCII letters,
+digits, `-`, `_`, and `.`, and starts and ends with a letter or digit. Use a
+row id, a UUID, or a ULID. Never `owner/name`, because a rename would then
+point at a different repository.
+
+**A push can create a repository.** A push to a granted key that does not
+exist creates it, unless `git.create_on_push` is `false`. A fetch of a missing
+repository is still not found. Call `CreateRepository` to create one before
+any push, or to set its default branch.
 
 **`CreateRepository` is idempotent on the key.** A second create with the same
 key answers with the same repository and makes nothing new. A retry needs no
@@ -97,11 +105,17 @@ that, byte for byte — send the separator, since `acme` also matches `acmex`.
 **A rejection is an outcome, not a failure.** `UpdateRefs` can land some
 updates and refuse others, and the RPC still returns `OK`. Read
 `UpdateRefsResponse.outcomes`, which come back in the order the updates were
-sent. An outcome with no `rejection` landed.
+sent. An outcome with no `rejection` landed. The call is not all-or-nothing:
+the other updates in it are unaffected.
 
 **`UpdateRefs` cannot introduce objects.** Every tip it names must already be
-a commit the repository stores. Push over git first, then move the ref. That
+stored in the repository, and a tip under `refs/heads/` must be a commit. Push over Git first, then move the ref. That
 is what makes `UpdateRefs` a merge and not a write path.
+
+**`CreateCommit` is the write path without Git.** It takes file changes, makes
+one commit on a branch, and moves the branch. Like `UpdateRefs`, it runs no
+hooks. Set `expected_old_commit` to guard the branch: a commit that does not
+match fails with `FAILED_PRECONDITION`. The request is at most 32 MiB.
 
 **`UpdateRefs` runs no `pre-receive`.** The application is the caller there,
 so there is nobody to ask. The user's policy runs in their own code before the
@@ -124,7 +138,7 @@ not "no shared history".
 ## Generating a client
 
 For every language, the input is the copied `proto/enroute/` tree. It lives in
-three places, and they hold the same six files:
+three places, and they hold the same seven files:
 
 | Where                                          | When to take it from there                                                                     |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
@@ -134,7 +148,7 @@ three places, and they hold the same six files:
 
 The copy in this skill is the contract at the time the skill was installed.
 That is the right one while the user runs a matching Enroute, which the
-`docker compose` in phase 2 gives them. If they pinned a different version,
+`docker run` in phase 2 gives them. If they pinned a different version,
 take it out of the image they run:
 
 ```sh
@@ -195,7 +209,7 @@ build of the project, not in the generate. One build after the first generate
 turns a mystery two phases later into a flag on the generate command.
 
 **Generate every file in the tree, `hook.proto` included.** It declares no
-service, so a command written around the four services skips it, and phase 4
+service, so a command written around the five services skips it, and phase 4
 then has no `HookRequest` or `HookResponse` to decode with. Name the whole
 tree, `proto/enroute/*/v1alpha1/*.proto` or the equivalent, rather than the
 service files one by one.

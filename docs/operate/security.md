@@ -23,6 +23,17 @@ private interface, and restrict it further with a network policy, a security
 group, or a service mesh. gRPC reflection is served on the same listener, so do
 not expose it if your API shape is confidential.
 
+## Git access
+
+The `authorize` hook is the only access control on `listen.git`. If you do not
+enable it, anyone who can reach the listener can read and push every
+repository, and a push creates new ones. Enroute logs a warning at startup when
+`authorize` is off and `listen.git` is not bound to a loopback address.
+
+Never expose `listen.git` with `authorize` off. Enable it in `hooks.enabled`
+before you bind Git to any interface other than loopback. See
+[Enable hooks](../reference/hooks.md#enable-hooks).
+
 ## Hook signatures
 
 Enroute signs each hook with Ed25519 HTTP Message Signatures (RFC 9421).
@@ -33,21 +44,22 @@ reading its body. Generate a separate key for each environment:
 openssl genpkey -algorithm ed25519 -out hook-signing-key.pem
 ```
 
-Reference the private key through `ENROUTE_HOOK_SIGNING_KEY`. The Quickstart
-uses a public RFC test key and is only suitable for local development. See
+Reference the private key through `ENROUTE_HOOK_SIGNING_KEY`. `enroute dev`
+keeps a generated key in its directory. Use that key only for local
+development. See
 [Verify hook signatures](../reference/verify-the-signature.md).
 
 ## Other boundaries
 
 `PushToRemote` discards credentials after each call. It rejects credentials in
 URLs and redirects, and permits only public `https` hosts unless
-`sync.allow_private_remotes` is enabled.
+`git.allow_private_remotes` is enabled.
 
 A deployment holds one application's repositories. Enroute enforces no
 boundary inside that set: every key is reachable by whoever reaches the API
 listener, and by whatever your `authorize` hook grants. To serve parties that
 must not reach each other's repositories, run a deployment per party, each with
-its own database and bucket.
+its own bucket and node disks.
 
 Enroute validates Git paths, repository keys, hook-context size, and ref
 targets. It does not provide rate limits, quotas, per-caller concurrency

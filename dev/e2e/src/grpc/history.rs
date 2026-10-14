@@ -1,11 +1,11 @@
 //! What a commit changed, and what landed before it.
 
-use enroute_git_test_support::linear_commit;
-
 use crate::contract::{Client, hex, hexes};
-use crate::support::{front_door_for, git, make_isolated_state, seed_pack, spawn_enroute};
+use crate::support::{Scratch, Stack, git};
 
-use super::support::{absent_oid, hook_backed_repo, pushed_repo, pushed_repo_serving, status_of};
+use super::support::{
+    PATH, absent_oid, hook_backed_repo, pushed_repo, pushed_repo_serving, status_of,
+};
 
 /// Where a merge base is measured against, as the other tests here use it.
 const TRUNK: &str = "refs/heads/main";
@@ -109,19 +109,16 @@ async fn diffing_a_tree_is_refused() {
 /// Returns the client, the repository id, the checkout, and every oid in
 /// the order git made them.
 async fn pushed_history(count: usize) -> (Client, String, tempfile::TempDir, Vec<String>) {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let stack = Stack::start().await;
+    let client = stack.client().await;
     let repo = client.create_repository("").await.unwrap();
     let id = repo.repo.clone().unwrap().key;
+    stack.repos.name(PATH, &id);
 
-    // Held for as long as the push needs it: every commit is made before
-    // the one push, so the front door outlives the only call that uses it.
-    let (front_door, _servers) = front_door_for(state).await;
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("work");
     std::fs::create_dir_all(&local).unwrap();
-    let url = format!("http://{front_door}/anything.git");
+    let url = stack.url(PATH);
     git(&["init", "-b", "main"], Some(&local)).await;
     git(&["remote", "add", "origin", &url], Some(&local)).await;
     for n in 0..count {
@@ -133,7 +130,7 @@ async fn pushed_history(count: usize) -> (Client, String, tempfile::TempDir, Vec
 
     let listed = git(&["rev-list", "--reverse", "HEAD"], Some(&local)).await;
     let oids = listed.lines().map(str::to_owned).collect();
-    (client, id, tmp, oids)
+    (client.holding(stack), id, tmp, oids)
 }
 
 /// The history reads back newest first, and reads back what git says it
@@ -325,22 +322,25 @@ async fn a_commit_carries_its_summary_and_author() {
 /// the other branch's tip — everything landed there since would read as undone.
 #[tokio::test]
 async fn a_merge_base_is_the_commit_two_branches_forked_at() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
     // One root, then a commit on each side of it.
-    let root = linear_commit(b"root\n", None, 1, "root");
-    let mine = linear_commit(b"mine\n", Some(&root.commit_sha), 2, "mine");
-    let yours = linear_commit(b"yours\n", Some(&root.commit_sha), 3, "yours");
-    seed_pack(&state, TRUNK, &[&root, &mine]).await;
-    seed_pack(&state, "refs/heads/yours", &[&root, &yours]).await;
+    let root = scratch.commit(b"root\n", None, "root").await;
+    let mine = scratch.commit(b"mine\n", Some(&root), "mine").await;
+    let yours = scratch.commit(b"yours\n", Some(&root), "yours").await;
+    stack.seed(&repo, TRUNK, &scratch, &mine).await;
+    stack
+        .seed(&repo, "refs/heads/yours", &scratch, &yours)
+        .await;
 
     let found = client
-        .find_merge_bases(&repo, &mine.commit_sha, &yours.commit_sha)
+        .find_merge_bases(&repo, &mine.oid, &yours.oid)
         .await
         .unwrap();
     assert_eq!(
         hexes(&found.base_commit_ids),
-        vec![root.commit_sha.as_str()],
+        vec![root.oid.as_str()],
         "the two forked at the root"
     );
     assert!(
@@ -351,22 +351,22 @@ async fn a_merge_base_is_the_commit_two_branches_forked_at() {
     assert_eq!(
         hexes(
             &client
-                .find_merge_bases(&repo, &yours.commit_sha, &mine.commit_sha)
+                .find_merge_bases(&repo, &yours.oid, &mine.oid)
                 .await
                 .unwrap()
                 .base_commit_ids
         ),
-        vec![root.commit_sha.as_str()],
+        vec![root.oid.as_str()],
     );
     assert_eq!(
         hexes(
             &client
-                .find_merge_bases(&repo, &mine.commit_sha, &mine.commit_sha)
+                .find_merge_bases(&repo, &mine.oid, &mine.oid)
                 .await
                 .unwrap()
                 .base_commit_ids
         ),
-        vec![mine.commit_sha.as_str()],
+        vec![mine.oid.as_str()],
     );
 }
 
@@ -376,15 +376,18 @@ async fn a_merge_base_is_the_commit_two_branches_forked_at() {
 /// the blob on the old side rather than in the paths.
 #[tokio::test]
 async fn a_diff_reads_against_the_base_it_is_given() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
 
     // Trunk moves on after the branch is cut, so the two have different ideas
     // of what the file says.
-    let root = linear_commit(b"root\n", None, 1, "root");
-    let landed = linear_commit(b"landed\n", Some(&root.commit_sha), 2, "landed on trunk");
-    let mine = linear_commit(b"mine\n", Some(&root.commit_sha), 3, "mine");
-    seed_pack(&state, TRUNK, &[&root, &landed]).await;
-    seed_pack(&state, "refs/heads/mine", &[&root, &mine]).await;
+    let root = scratch.commit(b"root\n", None, "root").await;
+    let landed = scratch
+        .commit(b"landed\n", Some(&root), "landed on trunk")
+        .await;
+    let mine = scratch.commit(b"mine\n", Some(&root), "mine").await;
+    stack.seed(&repo, TRUNK, &scratch, &landed).await;
+    stack.seed(&repo, "refs/heads/mine", &scratch, &mine).await;
 
     let older = |changes: Vec<enroute_api::api::v1alpha1::FileChange>| {
         assert_eq!(changes.len(), 1, "one path, written by every commit here");
@@ -394,40 +397,38 @@ async fn a_diff_reads_against_the_base_it_is_given() {
     // The base the two forked at, which `FindMergeBases` names and the test
     // above already holds it to.
     let against_base = client
-        .diff_commit(&repo, &mine.commit_sha, &root.commit_sha)
+        .diff_commit(&repo, &mine.oid, &root.oid)
         .await
         .unwrap();
     assert_eq!(
         older(against_base),
-        root.blob_oid.to_hex().to_string(),
+        root.blob.clone(),
         "what the branch changed, read from where it forked"
     );
 
     // Against trunk's tip the old side is trunk's own work, so the diff
     // claims the branch undid it.
     let against_tip = client
-        .diff_commit(&repo, &mine.commit_sha, &landed.commit_sha)
+        .diff_commit(&repo, &mine.oid, &landed.oid)
         .await
         .unwrap();
-    assert_eq!(older(against_tip), landed.blob_oid.to_hex().to_string());
+    assert_eq!(older(against_tip), landed.blob.clone());
 
     // Empty still means the first parent, which for this commit is the root.
-    let against_parent = client
-        .diff_commit(&repo, &mine.commit_sha, "")
-        .await
-        .unwrap();
-    assert_eq!(older(against_parent), root.blob_oid.to_hex().to_string());
+    let against_parent = client.diff_commit(&repo, &mine.oid, "").await.unwrap();
+    assert_eq!(older(against_parent), root.blob.clone());
 }
 
 /// A base that is not a commit is refused, as a diff of a tree is.
 #[tokio::test]
 async fn a_diff_against_a_base_that_is_not_a_commit_is_refused() {
-    let (state, client, repo, _servers) = hook_backed_repo(TRUNK).await;
-    let only = linear_commit(b"only\n", None, 1, "only");
-    seed_pack(&state, TRUNK, &[&only]).await;
+    let (stack, client, repo) = hook_backed_repo(TRUNK).await;
+    let scratch = Scratch::new().await;
+    let only = scratch.commit(b"only\n", None, "only").await;
+    stack.seed(&repo, TRUNK, &scratch, &only).await;
 
     let refused = client
-        .diff_commit(&repo, &only.commit_sha, &only.tree_sha)
+        .diff_commit(&repo, &only.oid, &only.tree)
         .await
         .expect_err("a tree is not a base");
     assert_eq!(status_of(&refused).code(), tonic::Code::InvalidArgument);

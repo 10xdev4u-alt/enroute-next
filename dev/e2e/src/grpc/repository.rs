@@ -3,30 +3,25 @@
 //!
 //! A repository here is made by the contract and reached only by its id.
 
-use crate::contract::Client;
-use crate::support::{
-    front_door_for, git, git_allowing_failure, make_isolated_state, make_isolated_state_on_pool,
-    spawn_enroute,
-};
+use crate::support::{Stack, git, git_allowing_failure};
 
-use super::support::{contract_only, contract_with_repo, status_of};
+use super::support::{PATH, contract_only, contract_with_repo, status_of};
 
 /// A repository created through the contract is a working repository:
 /// pushed into, cloned back, and never once named.
 #[tokio::test]
 async fn a_created_repository_takes_a_push() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let stack = Stack::start().await;
+    let client = stack.client().await;
 
     let repo = client.create_repository("").await.unwrap();
     assert_eq!(repo.default_branch, "refs/heads/main");
+    stack.repos.name(PATH, repo.repo.unwrap().key);
 
-    let (front_door, _servers) = front_door_for(state).await;
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("work");
     std::fs::create_dir_all(&local).unwrap();
-    let url = format!("http://{front_door}/anything.git");
+    let url = stack.url(PATH);
     git(&["init", "-b", "main"], Some(&local)).await;
     git(&["remote", "add", "origin", &url], Some(&local)).await;
     std::fs::write(local.join("a.txt"), "hello\n").unwrap();
@@ -46,20 +41,19 @@ async fn a_created_repository_takes_a_push() {
 /// with one has to advertise it before a single ref exists.
 #[tokio::test]
 async fn a_created_repository_keeps_its_default_branch() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let stack = Stack::start().await;
+    let client = stack.client().await;
 
     let repo = client.create_repository("refs/heads/trunk").await.unwrap();
     assert_eq!(repo.default_branch, "refs/heads/trunk");
+    stack.repos.name(PATH, repo.repo.unwrap().key);
 
     // Pushed to first, because a repository with no refs advertises none
     // — including `HEAD`, which is a symbolic ref to one of them.
-    let (front_door, _servers) = front_door_for(state).await;
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("work");
     std::fs::create_dir_all(&local).unwrap();
-    let url = format!("http://{front_door}/anything.git");
+    let url = stack.url(PATH);
     git(&["init", "-b", "trunk"], Some(&local)).await;
     git(&["remote", "add", "origin", &url], Some(&local)).await;
     std::fs::write(local.join("a.txt"), "hello\n").unwrap();
@@ -85,9 +79,7 @@ async fn a_created_repository_keeps_its_default_branch() {
 /// it would produce an advertisement no client could resolve.
 #[tokio::test]
 async fn a_default_branch_outside_refs_heads_is_refused() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let client = contract_only().await;
 
     client
         .create_repository("trunk")
@@ -99,9 +91,7 @@ async fn a_default_branch_outside_refs_heads_is_refused() {
 /// not an error — a caller retrying wants to hear the repository is gone.
 #[tokio::test]
 async fn a_deleted_repository_stops_answering() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let client = contract_only().await;
 
     let repo = client.create_repository("").await.unwrap();
     let id = repo.repo.clone().unwrap().key;
@@ -122,15 +112,17 @@ async fn a_deleted_repository_stops_answering() {
 
 /// What a deleted repository looks like to a git client: not an empty
 /// repository, which would invite a push into something already gone.
+///
+/// The stub application still names the key, so the refusal is the
+/// deployment's own.
 #[tokio::test]
 async fn a_deleted_repository_refuses_a_client() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let stack = Stack::start().await;
+    let client = stack.client().await;
     let repo = client.create_repository("").await.unwrap();
     let id = repo.repo.clone().unwrap().key;
-    let (front_door, _servers) = front_door_for(state).await;
-    let url = format!("http://{front_door}/anything.git");
+    stack.repos.name(PATH, &id);
+    let url = stack.url(PATH);
     let tmp = tempfile::tempdir().unwrap();
 
     client.delete_repository(&id).await.unwrap();
@@ -139,93 +131,12 @@ async fn a_deleted_repository_refuses_a_client() {
     assert!(!ok, "a deleted repository still answered:\n{output}");
 }
 
-/// The janitor's half of the delete: the rows and the stored objects go,
-/// and only once the window has passed.
-#[tokio::test]
-async fn the_janitor_reclaims_a_deleted_repository() {
-    let (state, pool) = make_isolated_state_on_pool().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
-    let repo = client.create_repository("").await.unwrap();
-    let id = repo.repo.clone().unwrap().key;
-
-    let (front_door, _servers) = front_door_for(state.clone()).await;
-    let tmp = tempfile::tempdir().unwrap();
-    let local = tmp.path().join("work");
-    std::fs::create_dir_all(&local).unwrap();
-    let url = format!("http://{front_door}/anything.git");
-    git(&["init", "-b", "main"], Some(&local)).await;
-    git(&["remote", "add", "origin", &url], Some(&local)).await;
-    std::fs::write(local.join("a.txt"), "hello\n").unwrap();
-    git(&["add", "."], Some(&local)).await;
-    git(&["commit", "-m", "first"], Some(&local)).await;
-    git(&["push", "origin", "main"], Some(&local)).await;
-
-    let stored = crate::support::only_repo(&state).await;
-    assert!(
-        !state.store.list_segments(&stored).await.unwrap().is_empty(),
-        "the push stored nothing, so a reclaim would prove nothing"
-    );
-
-    client.delete_repository(&id).await.unwrap();
-
-    // Still inside the window: nothing may be touched yet.
-    let waiting = enroute::maintenance::purge_deleted_repos(&state, 3600, false)
-        .await
-        .unwrap();
-    assert_eq!(waiting.repos, 0, "reclaimed before the window passed");
-    assert!(!state.store.list_segments(&stored).await.unwrap().is_empty());
-
-    let purged = enroute::maintenance::purge_deleted_repos(&state, 0, false)
-        .await
-        .unwrap();
-    assert_eq!(purged.repos, 1);
-    assert!(purged.objects > 0, "erased no objects: {purged:?}");
-    assert!(
-        state.store.list_segments(&stored).await.unwrap().is_empty(),
-        "the repository's segments outlived it"
-    );
-
-    // Every layer, not just the ones the summary counts: a row left behind
-    // would be invisible until something tripped over it.
-    for table in [
-        "repositories",
-        "branches",
-        "refs",
-        "commit_segments",
-        "object_seqs",
-        "repo_object_seq",
-        "commit_graph_segments",
-        "commit_pack_segments",
-        "tree_segments",
-        "blob_segments",
-    ] {
-        let column = if table.ends_with("_segments") && table != "commit_segments" {
-            "scope"
-        } else if table == "repositories" {
-            "id"
-        } else {
-            "repo_id"
-        };
-        // Both halves come from the literals above, not from the repository.
-        let left: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT count(*) FROM {table} WHERE {column} = $1"
-        )))
-        .bind(stored.id.as_i64())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(left, 0, "{table} still has rows for the purged repository");
-    }
-}
-
 /// `last_push_unix_seconds` is absent until something is pushed, and set
 /// afterwards — the field a repository listing is built from.
 #[tokio::test]
 async fn a_repository_reports_its_last_push() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let stack = Stack::start().await;
+    let client = stack.client().await;
     let created = client.create_repository("").await.unwrap();
     let id = created.repo.clone().unwrap().key;
     assert_eq!(
@@ -233,12 +144,12 @@ async fn a_repository_reports_its_last_push() {
         None,
         "an empty repository has never been pushed to"
     );
+    stack.repos.name(PATH, &id);
 
-    let (front_door, _servers) = front_door_for(state).await;
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().join("work");
     std::fs::create_dir_all(&local).unwrap();
-    let url = format!("http://{front_door}/anything.git");
+    let url = stack.url(PATH);
     git(&["init", "-b", "main"], Some(&local)).await;
     git(&["remote", "add", "origin", &url], Some(&local)).await;
     std::fs::write(local.join("a.txt"), "body\n").unwrap();
@@ -362,7 +273,7 @@ async fn a_page_token_that_is_not_one_is_refused() {
     let client = contract_only().await;
 
     let refused = client
-        .list_repositories(0, "not/a/token")
+        .list_repositories(0, "not a token")
         .await
         .expect_err("a token nothing minted");
     assert_eq!(status_of(&refused).code(), tonic::Code::InvalidArgument);

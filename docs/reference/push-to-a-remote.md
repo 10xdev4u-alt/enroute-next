@@ -22,7 +22,7 @@ has the requested values.
 
 ## URL restrictions
 
-- Use `https`; `http` requires `sync.allow_private_remotes`.
+- Use `https`; `http` requires `git.allow_private_remotes`.
 - Do not include a username, password, query, or fragment in the URL.
 - Hosts must resolve to public addresses unless private remotes are enabled.
 - Redirects are rejected so credentials cannot reach an unnamed host.

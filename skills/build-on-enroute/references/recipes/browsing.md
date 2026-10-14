@@ -5,13 +5,13 @@ nothing cloned.
 
 ## The problem
 
-A repository has to be readable by something that is not a git client. The
-usual way to build that keeps a working copy on disk and calls git for every
-page, which puts a checkout, a disk, and a git binary behind the web tier,
+A repository has to be readable by something that is not a Git client. The
+usual way to build that keeps a working copy on disk and calls Git for every
+page, which puts a checkout, a disk, and a Git binary behind the web tier,
 and makes every page a fork and a parse.
 
 Enroute answers the questions directly, so a page is a handful of reads. The
-trap is that the reads are *not* the git commands they resemble, and the
+trap is that the reads are *not* the Git commands they resemble, and the
 differences give no error.
 
 `listTree` has no path filter. It walks the whole tree, breadth first, so a UI
@@ -65,7 +65,7 @@ listing above it. Entries arrive depth by depth, and the order inside a depth
 is not promised.
 
 **`getObject` is a stream with a header first.** One `ObjectHeader`, then the
-bytes. The header carries the size git records, so a renderer can refuse a
+bytes. The header carries the size Git records, so a renderer can refuse a
 400 MB blob before it buffers any of it.
 
 **A path does not have to be UTF-8.** Git stores a filename as bytes. An

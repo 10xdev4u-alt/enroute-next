@@ -11,23 +11,23 @@ Proto files define every wire type and field.
 
 | Package | Contents |
 | --- | --- |
-| `enroute.api.v1alpha1` | Repository, ref, object, and sync services |
+| `enroute.api.v1alpha1` | Repository, ref, object, sync, and commit services |
 | `enroute.hook.v1alpha1` | Hook request and response messages |
 | `enroute.common.v1alpha1` | `RepoKey` and `ObjectId` |
 
 Optional object IDs are unset fields, not empty strings or forty zeroes.
 
 The hook package has no gRPC service. Hooks are HTTP `POST` requests to one
-endpoint, and `HookRequest.call` selects the hook type. Generate all proto
-files, including the hook messages:
+endpoint, and `HookRequest.call` selects the hook type. Generate a client from
+all proto files, including the hook package. To inspect a hook message on a
+running server:
 
 ```sh
 grpcurl -plaintext 127.0.0.1:50051 describe enroute.hook.v1alpha1.HookRequest
 ```
 
 The API listener exposes gRPC reflection from the descriptors built into the
-server. Reflection exposes protocol
-definitions, not repository data. Use it to inspect a running server; use a
+server. Reflection exposes protocol definitions, not repository data. Use it to inspect a running server; use a
 committed proto copy to generate and version a client.
 
 `v1alpha1` can change before Enroute 1.0. Copy and commit the proto files in

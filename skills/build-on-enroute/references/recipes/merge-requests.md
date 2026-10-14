@@ -67,7 +67,7 @@ per [protected-branches.md](protected-branches.md), and the merge request is
 the only way in. `UpdateRefs` runs no `pre-receive`, because the caller there
 is the application, so the rule that refuses every person pushing to the trunk
 does not refuse this merge. There is no exemption to write, and no way for a
-git client to borrow one.
+Git client to borrow one.
 
 ## A push invites a request; it does not open one
 
@@ -146,7 +146,8 @@ matches `base`, and drop the rest. Check `truncated` on the diff: a set that
 stopped at a server limit is only the first part of the answer.
 
 `findMergeBases` answers with every base in `baseCommitIds`, because a
-criss-cross history has more than one. One is the ordinary answer.
+criss-cross history has more than one. One is the ordinary answer. The order
+is not defined, so with more than one, choose by your own rule.
 [rendering.md](rendering.md) is how those changes become a diff on a page.
 
 ## What to offer the reviewer
@@ -176,14 +177,14 @@ vouch for.
 
 ## What it does not do
 
-**Enroute makes no merge commit.** It cannot create a git object outside a
+**Enroute makes no merge commit.** It cannot create a Git object outside a
 packfile, so these are the shapes on offer:
 
 | Shape | How it works |
 | --- | --- |
 | Fast-forward | Require the branch to hold the trunk, then move the ref. Nothing to build. |
 | Rebase, then fast-forward | The rewritten commits must be *pushed* first, by the contributor or by a worker with a checkout. Then it is the row above. |
-| A true merge commit | A worker with a checkout builds it and pushes it over git. Merging it is then a ref move again. |
+| A true merge commit | A worker with a checkout builds it and pushes it over Git. Merging it is then a ref move again. |
 
 **The constraint decides the workflow.** Choose fast-forward-only even where a
 merge commit is available. The trunk stays linear. What was tested is what

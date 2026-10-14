@@ -89,8 +89,8 @@ message ListRepositoriesResponse {
   // short page is not the end, since a repository deleted mid-walk leaves a
   // position that reports nothing.
   //
-  // A key today, and still a token: what a page resumes from is this call's
-  // to decide.
+  // It holds a repository key, but treat it as opaque: what a page resumes
+  // from is this call's to decide.
   string next_page_token = 2;
 }
 

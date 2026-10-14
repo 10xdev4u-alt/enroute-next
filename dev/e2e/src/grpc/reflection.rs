@@ -10,17 +10,16 @@ use tonic_reflection::pb::v1::server_reflection_client::ServerReflectionClient;
 use tonic_reflection::pb::v1::server_reflection_request::MessageRequest;
 use tonic_reflection::pb::v1::server_reflection_response::MessageResponse;
 
-use crate::support::{make_isolated_state, spawn_enroute};
+use crate::support::Stack;
 
 /// One reflection call against a contract, answered.
 ///
 /// Nothing authenticates here, as nothing authenticates anywhere on the
 /// tests: the four services are guarded and this is deliberately not.
 async fn ask(request: MessageRequest) -> MessageResponse {
-    let state = make_isolated_state().await;
-    let addr = spawn_enroute(state).await;
+    let stack = Stack::start().await;
 
-    let channel = tonic::transport::Channel::from_shared(format!("http://{addr}"))
+    let channel = tonic::transport::Channel::from_shared(stack.deployment.grpc_url().to_string())
         .expect("a usable contract URL")
         .connect()
         .await
@@ -59,6 +58,7 @@ async fn it_lists_every_service_the_contract_holds() {
         "enroute.api.v1alpha1.RefService",
         "enroute.api.v1alpha1.ObjectService",
         "enroute.api.v1alpha1.SyncService",
+        "enroute.api.v1alpha1.CommitService",
     ] {
         assert!(
             names.contains(&wanted),

@@ -1,5 +1,7 @@
-//! Shared helpers for enroute's end-to-end tests: spawning the enroute server,
-//! running the system `git` client, and diffing working trees.
+//! Shared helpers for enroute's end-to-end tests: starting the deployment
+//! under test, running the system `git` client, and diffing working trees.
+//!
+//! Wire-level only, so the conformance suite names no engine crate.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,29 +19,17 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
 
-use object_store::memory::InMemory;
-use tokio::sync::OnceCell;
 use tracing::Instrument as _;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
 
-use bench_support::collect::{Collector, KeyedBy};
-use enroute_git_core::{ExternalKey, RepoId};
-use enroute_git_ingest::LocalIngestWorker;
-use enroute_git_retrieve::Storage;
-use enroute_git_store::Store;
-use enroute_git_test_support::{TestCommit, git_command, make_pack};
-use enroute_postgres::test_database_url;
+use test_support::collect::Collector;
+pub(crate) use test_support::git::isolated as isolated_git;
 
-/// One ephemeral metadata store, shared across every `init_test()` call.
-///
-/// `proptest-state-machine` calls `init_test` hundreds of times per run, so
-/// isolation comes from a fresh `repo_id` per call rather than a fresh store.
-static METADATA_STORE: OnceCell<Storage> = OnceCell::const_new();
+use crate::contract::Client;
+use crate::engine::{ALL_HOOKS, App, Enroute, PreReceiveMode};
 
 /// Who the stub application attributes a granted request to.
 ///
@@ -47,125 +37,145 @@ static METADATA_STORE: OnceCell<Storage> = OnceCell::const_new();
 /// requires *some* username to send a password at all.
 pub(crate) const ALICE: &str = crate::hooks::ACTOR;
 
-async fn shared_metadata_store() -> Storage {
-    METADATA_STORE
-        .get_or_init(|| async {
-            enroute_postgres::ephemeral(&test_database_url())
-                .await
-                .expect("provisioning e2e metadata store")
-                .0
-        })
-        .await
-        .clone()
+/// A deployment under test, and the stub application it calls.
+///
+/// Dropping it stops both.
+#[derive(Debug)]
+pub(crate) struct Stack {
+    pub(crate) deployment: Enroute,
+    /// The names the stub resolves, which a test adds to.
+    pub(crate) repos: crate::hooks::Repos,
+    /// Every push the stub was told had landed.
+    pub(crate) landed: crate::hooks::Landed,
+    _app: Servers,
 }
 
-fn in_memory_store() -> Arc<Store> {
-    Arc::new(Store::new(Arc::new(InMemory::new())))
-}
-
-pub(crate) async fn make_state() -> Storage {
-    Storage {
-        store: in_memory_store(),
-        ..shared_metadata_store().await
+impl Stack {
+    /// An empty deployment, with a stub
+    /// application that names no repository.
+    pub(crate) async fn start() -> Self {
+        Self::start_hooks(&ALL_HOOKS).await
     }
-}
 
-/// Like [`make_state`], but on a dedicated ephemeral store.
-///
-/// The fuzzer's shared store is capped at 1 connection, and a smoke test
-/// contending with hundreds of concurrent `init_test()` calls on it timed out.
-pub(crate) async fn make_isolated_state() -> Storage {
-    make_isolated_state_on_pool().await.0
-}
+    /// A deployment that calls only the hooks `enabled` names.
+    pub(crate) async fn start_hooks(enabled: &[&'static str]) -> Self {
+        Self::start_app(enabled, PreReceiveMode::Commands).await
+    }
 
-/// The same, with the pool beside it, for a check reading the tables
-/// directly.
-pub(crate) async fn make_isolated_state_on_pool() -> (Storage, sqlx::PgPool) {
-    let (storage, pool) = enroute_postgres::ephemeral(&test_database_url())
+    /// A deployment that calls every hook, with the pushed objects readable
+    /// during `pre_receive`.
+    pub(crate) async fn start_reading_objects() -> Self {
+        Self::start_app(&ALL_HOOKS, PreReceiveMode::Objects).await
+    }
+
+    async fn start_app(enabled: &[&'static str], pre_receive_mode: PreReceiveMode) -> Self {
+        let repos = crate::hooks::Repos::default();
+        let landed = crate::hooks::Landed::default();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint_url = test_support::hooks::endpoint_url(&format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        ));
+        let router = crate::hooks::router(
+            repos.clone(),
+            landed.clone(),
+            vec![endpoint_signing_key().verifying_key()],
+            &endpoint_url,
+        );
+        let app = serve_until_dropped(listener, router);
+
+        let deployment = Enroute::start(Some(App {
+            endpoint_url,
+            signing_key: endpoint_signing_key(),
+            enabled: enabled.to_vec(),
+            pre_receive_mode,
+        }))
         .await
-        .expect("provisioning isolated metadata store");
-    (
-        Storage {
-            store: in_memory_store(),
-            ..storage
-        },
-        pool,
-    )
-}
+        .expect("starting the deployment under test");
+        Self {
+            deployment,
+            repos,
+            landed,
+            _app: app,
+        }
+    }
 
-/// The contract on a loopback port, with the handle that stops it.
-///
-/// No `Hooks`: the contract door asks an application nothing, the application
-/// being the caller there.
-pub(crate) async fn spawn_contract(state: Storage) -> (std::net::SocketAddr, Servers) {
-    let services = enroute::grpc::services(state, local_remotes());
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        enroute::grpc::router(services)
+    /// A contract client for this deployment.
+    pub(crate) async fn client(&self) -> Client {
+        Client::connect(self.deployment.grpc_url().to_string())
+            .await
             .unwrap()
-            .serve_with_incoming_shutdown(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
-                async move {
-                    let _dropped = stopped.await;
-                },
-            )
+    }
+
+    /// Create a repository over the contract, and name it `name` to the stub.
+    ///
+    /// Returns the repository key, which [`key_for`] keeps different from
+    /// `name`.
+    pub(crate) async fn create(&self, name: &str) -> String {
+        let key = key_for(name);
+        self.client()
+            .await
+            .create_repository_as(&key, "")
             .await
             .unwrap();
-    });
+        self.repos.name(name, &key);
+        key
+    }
 
-    (addr, Servers(vec![stop]))
-}
+    /// The git URL the stub resolves as `name`, with [`ALICE`]'s credentials.
+    pub(crate) fn url(&self, name: &str) -> String {
+        let token = test_support::hooks::TOKEN;
+        let base = self
+            .deployment
+            .git_url()
+            .replacen("://", &format!("://{ALICE}:{token}@"), 1);
+        format!("{base}/{name}.git")
+    }
 
-/// A sync client allowed to dial the loopback remotes these tests spin up.
-pub(crate) fn local_remotes() -> enroute_git_remote::Client {
-    enroute_git_remote::Client::new(enroute_git_remote::Reach { private: true })
-        .expect("a sync client")
-}
+    /// Store the history of `tip` in `repo`, and leave `refname` on `tip`.
+    ///
+    /// A test that moves a ref onto objects a git client made pushes them over
+    /// git first.
+    pub(crate) async fn seed(&self, repo: &str, refname: &str, scratch: &Scratch, tip: &Commit) {
+        self.repos.name(repo, repo);
+        scratch.push(&self.url(repo), refname, tip).await;
+    }
 
-/// Serve the `enroute.api.v1alpha1` contract over gRPC on a loopback port.
-pub(crate) async fn spawn_enroute(state: Storage) -> std::net::SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    // No hooks: these tests are about the contract's own primitives, and the
-    // `pre-receive` path has its own coverage over git.
-    let services = enroute::grpc::services(state, local_remotes());
-    tokio::spawn(async move {
-        enroute::grpc::router(services)
-            .unwrap()
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+    /// Wait for the deployment's upkeep of `repo` to finish.
+    pub(crate) async fn maintain(&self, repo: &str) {
+        self.deployment
+            .maintain(repo)
             .await
-            .unwrap();
-    });
-    addr
+            .expect("maintenance to settle");
+    }
 }
 
 /// The key Enroute signs endpoint calls with in these tests.
 ///
 /// The stub application's own, because what is under test is that both ends
 /// agree.
-pub(crate) use bench_support::hooks::signing_key as endpoint_signing_key;
+pub(crate) use test_support::hooks::signing_key as endpoint_signing_key;
 
-/// The servers a test spawned, stopped when this is dropped.
-///
-/// Holding one is not optional: a `pg_temp` schema is pinned to its
-/// connection, so a server that never stops starves later `init_test()` calls.
-#[must_use = "dropping this stops the servers the test is about to use"]
-pub(crate) struct Servers(Vec<tokio::sync::oneshot::Sender<()>>);
+/// A server a test spawned, stopped when this is dropped.
+#[derive(Debug)]
+#[must_use = "dropping this stops the server the test is about to use"]
+pub(crate) struct Servers {
+    _stop: tokio::sync::oneshot::Sender<()>,
+}
 
 impl Servers {
-    /// Fold another test's servers into this handle, so one value keeps
-    /// everything a test spawned alive.
-    pub(crate) fn and(mut self, other: Self) -> Self {
-        self.0.extend(other.0);
-        self
+    /// A handle that stops one server when it is dropped.
+    pub(crate) fn stopping(stop: tokio::sync::oneshot::Sender<()>) -> Self {
+        Self { _stop: stop }
     }
 }
 
 /// Serve `router` on `listener` until the returned handle is dropped.
-fn serve_until_dropped(listener: tokio::net::TcpListener, router: axum::Router) -> Servers {
+pub(crate) fn serve_until_dropped(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+) -> Servers {
     let (stop, stopped) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         axum::serve(listener, router)
@@ -176,7 +186,7 @@ fn serve_until_dropped(listener: tokio::net::TcpListener, router: axum::Router) 
             .await
             .unwrap();
     });
-    Servers(vec![stop])
+    Servers::stopping(stop)
 }
 
 /// A bare git repository served over smart HTTP by real `git`, to push at.
@@ -222,7 +232,7 @@ pub(crate) async fn spawn_git_remote(dir: &Path) -> (std::net::SocketAddr, Serve
 /// `--advertise-refs` writes what the connection itself would; the framing
 /// around it belongs to the transport, which here is this function.
 async fn advertise_refs(dir: &Path) -> axum::response::Response {
-    let advertised = tokio::process::Command::new("git")
+    let advertised = tokio::process::Command::from(isolated_git())
         .args(["receive-pack", "--advertise-refs"])
         .arg(dir)
         .output()
@@ -242,7 +252,7 @@ async fn advertise_refs(dir: &Path) -> axum::response::Response {
 async fn receive_pack(dir: &Path, body: &[u8]) -> axum::response::Response {
     use tokio::io::AsyncWriteExt as _;
 
-    let mut child = tokio::process::Command::new("git")
+    let mut child = tokio::process::Command::from(isolated_git())
         .args(["receive-pack", "--stateless-rpc"])
         .arg(dir)
         .stdin(std::process::Stdio::piped())
@@ -276,205 +286,101 @@ pub(crate) async fn remote_ref(dir: &Path, refname: &str) -> Option<String> {
     ok.then(|| out.trim().to_string())
 }
 
-/// Enroute's git front door over `state`, deciding with `authorizer`.
-///
-/// This reaches storage directly rather than through the contract: Enroute
-/// serves git itself, with no second process between pkt-lines and objects.
-pub(crate) async fn spawn_git(
-    state: Storage,
-    authorizer: Arc<dyn enroute_git_http::Authorizer>,
-    hooks: Arc<dyn enroute_git_ingest::ReceiveHooks>,
-    visibility: Arc<dyn enroute_git_http::RefVisibility>,
-) -> (std::net::SocketAddr, Servers) {
-    let worker = LocalIngestWorker::shared(state.clone(), Arc::new(InMemory::new()));
-    let router = enroute::git::router(state, worker, authorizer, hooks, visibility);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    (addr, serve_until_dropped(listener, router))
-}
-
 /// What the stub application calls the repository served at `path`.
 ///
 /// Deliberately not `path`: which repository a path means is the whole of what
 /// `authorize` is asked, and one string for both would never exercise it.
-pub(crate) fn key_for(path: &str) -> ExternalKey {
-    ExternalKey::new(format!("key-{path}"))
+pub(crate) fn key_for(path: &str) -> String {
+    format!("key-{path}")
 }
 
-/// A stub application of its own, naming every repository in `repos`.
-///
-/// A stub because a real application now lives in TypeScript, which a Rust test
-/// cannot spawn — this implements the same endpoint protocol instead.
-pub(crate) async fn spawn_hooks(
-    repos: &[&str],
-) -> (std::net::SocketAddr, String, crate::hooks::Landed, Servers) {
-    let named = repos
-        .iter()
-        .fold(crate::hooks::Repos::default(), |named, name| {
-            named.with(name, key_for(name).to_string())
-        });
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let landed = crate::hooks::Landed::default();
-    let router = crate::hooks::router(
-        named,
-        landed.clone(),
-        vec![endpoint_signing_key().verifying_key()],
-        &bench_support::hooks::endpoint_url(&format!("http://{addr}")),
-    );
-    (
-        addr,
-        bench_support::hooks::TOKEN.to_string(),
-        landed,
-        serve_until_dropped(listener, router),
-    )
+/// A commit made in a [`Scratch`] repository, by the ids of what it holds.
+#[derive(Debug, Clone)]
+pub(crate) struct Commit {
+    pub(crate) oid: String,
+    pub(crate) tree: String,
+    /// The one blob, at `hello.txt`.
+    pub(crate) blob: String,
 }
 
-/// A git front door over `state`, serving every repository in `repos`.
-///
-/// Three processes' worth of wiring in one: Enroute, the application behind
-/// it, and the git port asking it. Returns the git port and [`ALICE`]'s token.
-pub(crate) async fn spawn_server(
-    state: Storage,
-    repos: &[&str],
-) -> (std::net::SocketAddr, String, crate::hooks::Landed, Servers) {
-    let (hooks, token, landed, hook_servers) = spawn_hooks(repos).await;
-
-    // One `Hooks` answers every one of a git client's questions — who may reach
-    // a repository, which refs it sees, and which may land — as the real binary
-    // wires it.
-    let hooks = Arc::new(
-        // The suite's stub answers at once, so the budget only has to be
-        // longer than nothing.
-        enroute::hooks::Hooks::new(
-            state.clone(),
-            bench_support::hooks::endpoint_url(&format!("http://{hooks}"))
-                .parse()
-                .expect("a hook endpoint URL"),
-            endpoint_signing_key(),
-            Duration::from_secs(10),
-        )
-        .expect("building the hooks endpoint client"),
-    );
-    let (addr, git_servers) = spawn_git(state, hooks.clone(), hooks.clone(), hooks).await;
-    (addr, token, landed, git_servers.and(hook_servers))
-}
-
-/// Store every object of `commits` and leave `refname` on the last of them.
-///
-/// The contract cannot introduce an object, so a test about moving a ref onto
-/// one needs this first — the push that stores it, run in-process.
-pub(crate) async fn seed_pack(state: &Storage, refname: &str, commits: &[&TestCommit]) {
-    let tip = &commits.last().expect("a seed needs a commit").commit_sha;
-    let null = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
-    let update = enroute_git_retrieve::RefUpdate {
-        refname: refname.to_string(),
-        old_id: null,
-        new_id: gix_hash::ObjectId::from_hex(tip.as_bytes()).expect("a tip is an object id"),
-    };
-    let repo = only_repo(state).await;
-    let repo_id = repo.id;
-    let existing = state
-        .rows
-        .repo(repo_id)
-        .refs_matching(&[refname])
-        .await
-        .expect("reading the refs this seed names");
-
-    let entries: Vec<_> = commits
-        .iter()
-        .flat_map(|commit| commit.pack_entries())
-        .collect();
-    let worker = LocalIngestWorker::shared(state.clone(), Arc::new(InMemory::new()));
-    let request = enroute_git_ingest::IngestRequest {
-        repo: repo.clone(),
-        existing,
-        updates: vec![update.clone()],
-    };
-    let incoming = enroute_git_ingest::IncomingPack {
-        reader: Box::new(std::io::Cursor::new(make_pack(&entries))),
-        len_hint: None,
-    };
-    let meter = enroute_git_cost::Meter::new();
-    let ingested = worker
-        .ingest(
-            request,
-            incoming,
-            &enroute_git_ingest::noop_progress,
-            &meter,
-        )
-        .await
-        .expect("ingesting the seed pack");
-
-    let outcomes = enroute_git_ingest::apply_ref_updates(
-        state,
-        &repo,
-        &enroute_git_ingest::Actor::new(ALICE),
-        &[update],
-        ingested,
-        &enroute_git_ingest::NoHooks,
-        &enroute_git_ingest::noop_progress,
-    )
-    .await
-    .expect("applying the seed's ref update");
-    assert!(
-        outcomes
-            .outcomes
-            .iter()
-            .all(|outcome| outcome.result.is_ok()),
-        "the seed push has to land: {:?}",
-        outcomes.outcomes
-    );
-}
-
-/// An authorizer that answers every request with one repository, for the
-/// tests that are about the git paths rather than about who may reach them.
+/// A local repository to make commits in, so a test can name an object
+/// before any deployment holds it.
 #[derive(Debug)]
-pub(crate) struct OneRepo(pub(crate) RepoId);
+pub(crate) struct Scratch(tempfile::TempDir);
 
-#[async_trait::async_trait]
-impl enroute_git_http::Authorizer for OneRepo {
-    async fn authorize(
+impl Scratch {
+    pub(crate) async fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        git(&["init", "-b", "main"], Some(dir.path())).await;
+        Self(dir)
+    }
+
+    /// Where the repository is, to run git in.
+    pub(crate) fn path(&self) -> &Path {
+        self.0.path()
+    }
+
+    /// A commit whose tree holds only `body` at `hello.txt`, on `parent` if given.
+    pub(crate) async fn commit(
         &self,
-        _request: &enroute_git_http::GitRequest<'_>,
-    ) -> Result<enroute_git_http::Authorized, enroute_git_http::AuthError> {
-        Ok(enroute_git_http::Authorized {
-            repo: self.0,
-            actor: enroute_git_ingest::Actor::new(ALICE),
-        })
+        body: &[u8],
+        parent: Option<&Commit>,
+        message: &str,
+    ) -> Commit {
+        let dir = self.0.path();
+        std::fs::write(dir.join("hello.txt"), body).unwrap();
+        git(&["add", "hello.txt"], Some(dir)).await;
+        let tree = git(&["write-tree"], Some(dir)).await.trim().to_string();
+        let mut args = vec!["commit-tree", tree.as_str(), "-m", message];
+        if let Some(parent) = parent {
+            args.extend(["-p", parent.oid.as_str()]);
+        }
+        let oid = git(&args, Some(dir)).await.trim().to_string();
+        let blob = git(&["rev-parse", &format!("{tree}:hello.txt")], Some(dir))
+            .await
+            .trim()
+            .to_string();
+        Commit { oid, tree, blob }
+    }
+
+    /// Push `tip` and its history to `refname` at `url`.
+    pub(crate) async fn push(&self, url: &str, refname: &str, tip: &Commit) {
+        let refspec = format!("{}:{refname}", tip.oid);
+        git(&["push", url, &refspec], Some(self.0.path())).await;
     }
 }
 
-/// Enroute's git front door over `state`, serving `repo` under any name.
-pub(crate) async fn spawn_git_for(state: Storage, repo: RepoId) -> (std::net::SocketAddr, Servers) {
-    spawn_git(
-        state,
-        Arc::new(OneRepo(repo)),
-        Arc::new(enroute_git_ingest::NoHooks),
-        Arc::new(enroute_git_http::AllRefsVisible),
-    )
-    .await
+/// A repository on its own deployment, and a local checkout whose `origin`
+/// points at it.
+///
+/// The [`tempfile::TempDir`] comes back so the caller keeps it alive.
+pub(crate) async fn spawn_smoke_repo() -> (tempfile::TempDir, PathBuf, Stack) {
+    let stack = Stack::start().await;
+    let (tmp, local, _) = smoke_repo_on(&stack).await;
+    (tmp, local, stack)
 }
 
-/// The preamble every wire-level smoke test opens with.
-///
-/// A fresh repo on its own server, and a local checkout whose `origin` points
-/// at it. The [`tempfile::TempDir`] comes back so the caller keeps it alive.
-pub(crate) async fn spawn_smoke_repo() -> (tempfile::TempDir, PathBuf, crate::hooks::Landed, Servers)
-{
-    let state = make_isolated_state().await;
+/// [`spawn_smoke_repo`] on `stack`, with the repository key.
+pub(crate) async fn smoke_repo_on(stack: &Stack) -> (tempfile::TempDir, PathBuf, String) {
     let name = format!("repo-{}", uuid::Uuid::new_v4());
-    state.rows.create(None, &key_for(&name)).await.unwrap();
-    let (addr, token, landed, servers) = spawn_server(state, &[&name]).await;
-    let repo = name;
-    let url = format!("http://{ALICE}:{token}@{addr}/{repo}.git");
+    let key = stack.create(&name).await;
+    let url = stack.url(&name);
 
     let tmp = tempfile::tempdir().unwrap();
     let local = tmp.path().to_path_buf();
     git(&["init", "-b", "main"], Some(&local)).await;
     git(&["remote", "add", "origin", &url], Some(&local)).await;
-    (tmp, local, landed, servers)
+    (tmp, local, key)
+}
+
+/// An [`isolated_git`] command for `args`, run in `dir` if one is given.
+fn git_command(args: &[&str], dir: Option<&Path>) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::from(isolated_git());
+    if let Some(dir) = dir {
+        cmd.current_dir(dir);
+    }
+    cmd.args(args);
+    cmd
 }
 
 /// Send a `Host` the spawned server would never otherwise see.
@@ -516,6 +422,28 @@ pub(crate) async fn git_allowing_failure(args: &[&str], dir: &Path) -> (bool, St
     (out.status.success(), combined_output(&out))
 }
 
+/// The id of a commit on the branch the stub refuses, pushed and refused.
+///
+/// The push must fail with the stub's reason.
+pub(crate) async fn push_refused_commit(local: &Path) -> String {
+    let branch = crate::hooks::PROTECTED
+        .strip_prefix("refs/heads/")
+        .expect("the stub protects a branch");
+    git(&["checkout", "-b", branch], Some(local)).await;
+    std::fs::write(local.join("a.txt"), "refused\n").unwrap();
+    git(&["add", "."], Some(local)).await;
+    git(&["commit", "-m", "refused"], Some(local)).await;
+    let commit = git(&["rev-parse", "HEAD"], Some(local)).await;
+
+    let (ok, out) = git_allowing_failure(&["push", "origin", branch], local).await;
+    assert!(!ok, "a push the hook refused must fail:\n{out}");
+    assert!(
+        out.contains("is protected by the stub application"),
+        "{out}"
+    );
+    commit.trim().to_string()
+}
+
 fn combined_output(out: &std::process::Output) -> String {
     format!(
         "{}{}",
@@ -529,7 +457,7 @@ async fn run_git(args: &[&str], dir: Option<&Path>) -> std::process::Output {
     async move {
         // Asynchronous because these clones and pushes talk to a server in
         // this same runtime, which a blocking wait would never let answer.
-        let mut cmd = tokio::process::Command::from(git_command(args, dir));
+        let mut cmd = git_command(args, dir);
         with_host_override(&mut cmd, ALICE);
         cmd.output().await.expect("git not found in PATH")
     }
@@ -637,7 +565,7 @@ impl TimingReport {
 /// Keyed by each span's `op` field: one `git` span stands for every
 /// subcommand, and the span name alone would file them all together.
 pub(crate) fn init_tracing() -> TimingReport {
-    let collector = Collector::keyed_by(KeyedBy::Op);
+    let collector = Collector::default();
     tracing_subscriber::registry()
         .with(collector.clone())
         .with(
@@ -647,32 +575,4 @@ pub(crate) fn init_tracing() -> TimingReport {
         )
         .init();
     TimingReport(collector)
-}
-
-/// Enroute's git front door over `state`, serving `id` under whatever
-/// name the test asks for.
-///
-/// A real deployment asks an application which repository a name means; these
-/// tests are about the git paths, so the answer is fixed instead.
-pub(crate) async fn front_door_for(state: Storage) -> (std::net::SocketAddr, Servers) {
-    let repo = only_repo(&state).await;
-    spawn_git_for(state, repo.id).await
-}
-
-/// The repository an isolated store holds, for a test that made exactly one.
-///
-/// A store here is per-test and holds one repository, which spares a caller a
-/// registry handle just to turn a key back into a row.
-pub(crate) async fn only_repo(state: &Storage) -> enroute_git_retrieve::RepoMetadata {
-    // `all` skips deleted repositories, so nought here is as likely to mean
-    // "this test deleted it" as "this test made none".
-    let mut held = state.rows.all().await.expect("listing repositories");
-    assert_eq!(
-        held.len(),
-        1,
-        "this helper reads the one repository a store holds, and this one holds \
-         {} that are not deleted — name the repository instead",
-        held.len()
-    );
-    held.pop().expect("one repository")
 }

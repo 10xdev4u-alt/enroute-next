@@ -1,6 +1,6 @@
 # The endpoint: answering Enroute
 
-One HTTP route. Enroute calls it each time a git request needs a decision that
+One HTTP route. Enroute calls it each time a Git request needs a decision that
 only the user's application can make.
 
 | Part           | Value                                  |
@@ -21,19 +21,19 @@ service on purpose.
 ## Four rules
 
 **Answer the call that was asked.** An empty `answer` means "I do not
-implement this", and Enroute refuses the git request rather than proceed on
+implement this", and Enroute refuses the Git request rather than proceed on
 an answer nobody gave. `post_receive` is the exception: the refs have already
 moved, so Enroute notes an empty answer there and ignores it.
 
-**Answer inside the timeout of the deployment.** It is `hooks.timeout_secs`
-and defaults to 10 seconds. A slower answer fails the git request. The default
+**Answer inside the timeout of the deployment.** It is `hooks.timeout`
+and defaults to 10 seconds. A slower answer fails the Git request. The default
 allows a cold serverless start.
 
 **Deny with `200`.** A refusal is a field in the answer. Any other status, an
-unreadable body, or a timeout is a *fault*: Enroute fails the git request
+unreadable body, or a timeout is a *fault*: Enroute fails the Git request
 closed. It never reads a fault as a refusal.
 
-**Never trust the request for identity.** The git client is the one party you
+**Never trust the request for identity.** The Git client is the one party you
 must not believe about who it is. `Granted.actor` is the user's answer, and
 Enroute hands every later call that answer rather than anything the client
 said.
@@ -41,7 +41,7 @@ said.
 ## Reading the raw body
 
 The signature covers exactly the bytes that arrived. A framework that parses,
-re-encodes, or normalises the body first breaks every call.
+re-encodes, or normalizes the body first breaks every call.
 
 | Framework             | Use                                                                    |
 | --------------------- | ---------------------------------------------------------------------- |
@@ -63,7 +63,7 @@ check and the protobuf decode.
 
 ### authorize
 
-Enroute asks this once per git request, before anything is served.
+Enroute asks this once per Git request, before anything is served.
 
 ```
 AuthorizeRequest { repo_path, headers[], access }
@@ -87,7 +87,7 @@ AuthorizeRequest { repo_path, headers[], access }
 - `headers` holds the request headers as they arrived, so the credential is
   in there. Git sends Basic by default. Accept `Authorization: Bearer <token>`,
   and `Basic <base64>` where the password is the token and the username is
-  ignored: git needs *some* username before it sends a password, and each
+  ignored: Git needs *some* username before it sends a password, and each
   client picks its own placeholder.
 - `access` is `ACCESS_READ` for a fetch, `ACCESS_WRITE` for a push.
 
@@ -140,13 +140,20 @@ is ignored. `HEAD` is not in the list. Enroute hides it when it hides what
 caller may read and what it may be told is writable are two questions.
 
 This hides refs, not objects. A client that knows the object id of a hidden
-tip can still fetch it, as under git's `uploadpack.hideRefs`. Anything whose
+tip can still fetch it, as under Git's `uploadpack.hideRefs`. Anything whose
 secrecy must survive a guessed object id needs a repository of its own.
 
 ### pre_receive
 
-This is git's `pre-receive` hook, for a repository whose hooks live in another
-process. The objects are stored and no ref has moved.
+This is Git's `pre-receive` hook, for a repository whose hooks live in another
+process. No ref has moved.
+
+By default, the pushed objects are **not** readable through the contract during
+this call. Decide from `actor`, `refname`, the ids, and `force`. If the policy
+must read the pushed commits first, for example with `diffCommit` or
+`listCommits`, set `pre_receive_mode = "objects"` under `[hooks]` (or pass
+`--pre-receive-mode objects` to `enroute dev`). Each push then costs a second
+log entry.
 
 ```
 PreReceiveRequest  { repo, actor, commands[], context }
@@ -157,7 +164,8 @@ Judgement          = JUDGEMENT_ALLOW | JUDGEMENT_REFUSE
 ```
 
 - `commands` holds what the push still asks for. Enroute has already removed
-  what it refused on its own.
+  what it refused on its own. In a push made with `git push --atomic`, one
+  such refusal fails the whole push, and Enroute does not make this call.
 - `old_object_id` is unset for a create. `new_object_id` is unset for a
   delete. Unset, not forty zeroes. Each is an `ObjectId { hex }`, not a bare
   string.
@@ -168,10 +176,15 @@ Judgement          = JUDGEMENT_ALLOW | JUDGEMENT_REFUSE
 Answer with one judgement per command, matched to it by refname. Judge every
 command you were sent: a command you leave out fails the whole push, the way a
 call you do not answer does. `reason` is read only for a refusal, and reaches
-the git client verbatim, the way the stderr of a hook does.
+the Git client verbatim, the way the stderr of a hook does.
 
 Enroute ignores a judgement for a refname the request did not carry, and
 refuses a refname judged twice if either judgement refuses it.
+
+A refusal is per ref, unless the push is atomic: with `git push --atomic`, one
+refusal fails the whole push and no ref lands. So an allowed ref can still
+fail to land, and another push can also move it first. Do not record an allow
+as a landing: `post_receive` tells you what landed.
 
 `visibleRefs` above answers with a plain list of names, and this one does not,
 because a refusal carries a reason and a list of allowed names has nowhere to
@@ -217,7 +230,7 @@ exit code of `post-receive`. A failure here undoes nothing.
 ## The context field
 
 `Granted.context` is opaque bytes. Enroute plays them back on `visible_refs`,
-`pre_receive`, and `post_receive` for the same git request, byte for byte. It
+`pre_receive`, and `post_receive` for the same Git request, byte for byte. It
 never parses or logs them, so a session id or a scoped token is safe there.
 
 The limit is 8 KiB. A longer one is a fault, not a denial.
@@ -234,10 +247,15 @@ Write it in this order, and test each part before the next:
 
 1. The route, reading raw bytes, answering `401` to anything unsigned.
 2. Signature verification. See `signature.md`.
-3. `authorize`, granting one hard-coded repository. Then a `git clone` works.
-4. `pre_receive` allowing every command it is sent, and `post_receive` doing
+3. `authorize`, granting one hard-coded repository. Then a `git clone` of an
+   empty repository works.
+4. `visible_refs` returning what it was sent. Then a `git clone` of a
+   repository with refs works.
+5. `pre_receive` allowing every command it is sent, and `post_receive` doing
    nothing. Then a `git push` works.
-5. `visible_refs` returning what it was sent. Then everything works.
 6. Replace each stub with the user's real policy.
 
-Steps 3 to 5 are the smallest endpoint that serves git. Get there first.
+This skill enables all four hooks, and Enroute refuses a Git request when an
+enabled hook gets no answer. Steps 3 to 5 are the smallest endpoint that serves
+Git. Get there first. To test one hook at a time, enable only the hooks the
+endpoint answers: `enroute dev --enable`, or `hooks.enabled` in a configuration file.

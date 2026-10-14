@@ -8,6 +8,8 @@ use toml::Value;
 /// Every workspace manifest, parsed once and shared by both manifest-based
 /// rules, which used to each re-read and re-parse the same files.
 pub(crate) struct Manifests {
+    /// The directory holding the root manifest.
+    pub(crate) root_dir: PathBuf,
     pub(crate) root: Value,
     /// `(manifest path, parsed manifest)` for each member that read cleanly.
     pub(crate) members: Vec<(PathBuf, Value)>,
@@ -18,6 +20,10 @@ pub(crate) struct Manifests {
 pub(crate) fn load(workspace_root: &Path) -> Option<Manifests> {
     let root = read(&workspace_root.join("Cargo.toml"))?;
     let mut members = Vec::new();
+    // The root package is a member without being listed.
+    if root.get("package").is_some() {
+        members.push((workspace_root.join("Cargo.toml"), root.clone()));
+    }
     let mut unreadable_members = Vec::new();
 
     for member in workspace_members(&root) {
@@ -29,6 +35,7 @@ pub(crate) fn load(workspace_root: &Path) -> Option<Manifests> {
     }
 
     Some(Manifests {
+        root_dir: workspace_root.to_path_buf(),
         root,
         members,
         unreadable_members,
@@ -76,16 +83,13 @@ mod tests {
         let root: Value = toml::from_str(
             "
             [workspace]
-            members = [\"crates/server/app\", \"crates/git/core\"]
+            members = [\"crates/app\", \"crates/git/core\"]
             ",
         )
         .expect("valid toml fixture");
         assert_eq!(
             workspace_members(&root),
-            vec![
-                "crates/server/app".to_string(),
-                "crates/git/core".to_string()
-            ]
+            vec!["crates/app".to_string(), "crates/git/core".to_string()]
         );
 
         let member: Value = toml::from_str(

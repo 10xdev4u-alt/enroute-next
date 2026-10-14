@@ -1,39 +1,63 @@
 # Storage
 
-Enroute keeps Git data in an object store and transactional metadata in
-Postgres. Serving processes are stateless; they do not keep repository disks.
+Enroute embeds a storage engine that is built like a modern database. Each
+repository is a set of immutable layers in an object store. Each repository also has its own replicated log for
+its refs and its layer list. There is no external database.
 
-## Object store
+## Nodes
 
-Git objects are stored in pack images. Reads use an index to locate a byte
-range in the object store. Active pushes use separate staging storage until
-ingestion completes.
+An Enroute process is a node. A node runs one of three roles:
 
-## Postgres
+- **Ledger.** A ledger node holds the replicated logs. It needs a durable local
+  disk. Every ledger node is a voter in the log of every repository.
+- **Compute.** A compute node does the Git work. It serves Git and the gRPC API. It
+  keeps only caches that it can rebuild, so it needs no durable disk.
+- **Both.** The default. One process runs the ledger and the compute.
 
-Postgres stores repository ownership, refs, object-ID-to-sequence mappings,
-and the index catalog. Enroute applies database migrations at startup.
+A compute node reads the current state of a repository from the ledger. Compute
+nodes find ledger nodes through the object store. See
+[Hosting](../operate/hosting.md).
 
-Each Git object type has a separate sequence-number space. A sequence number
-is meaningful only with its object type.
+## Layers
 
-## Indexes
+A push or an API change adds a layer to the repository. A layer holds Git
+objects, a commit graph, and an index. Layers never change after Enroute writes
+them. In the background, Enroute merges small layers into larger ones, and it
+removes layers that nothing refers to.
 
-The commit graph and object index are segmented. Small segments are stored in
-Postgres; larger segments are stored in the object store. Writes append a
-segment, reads compose the needed segments, and maintenance merges segments.
+The layer list and the refs are the state of the repository. The ledger keeps
+that state. Enroute writes a checkpoint of it to the object store within
+a minute of a change.
 
-The commit graph supports ancestry, merge-base, and history queries. The
-object index locates objects and records tree entries. See
-[Architecture](../internals/architecture.md).
+## Durability
 
-## Ingestion and retention
+A small push is acknowledged when its layer is in the replicated log on a
+majority of ledger nodes. Enroute then flushes the layer to the object store in
+the background. A large push uploads its layer to the object store first.
 
-The server keeps Git connections open, calls hooks, and updates refs.
-Ingestion stores uploaded objects and builds indexes. It can run locally or in
-Lambda. See [Storage backends](../operate/storage-backends.md).
+Until the flush, the data is as durable as the logs on the ledger nodes' disks.
+If a majority of ledger nodes lose their disks, recovery is manual, from the
+last checkpoint, and up to about a minute of writes can be lost. See
+[Maintenance](../operate/maintenance.md).
+
+## Reads
+
+Reads are linearizable: they see every write that finished before the read
+began, through any compute node. This is true for the gRPC API reads, for the
+refs of a fetch (`ls-refs`, or the ref advertisement of protocol v0), and for
+the ref advertisement of a push.
+
+## Repositories
+
+`CreateRepository` creates a repository. A push to a key that does not exist
+also creates one, unless `git.create_on_push` is `false`. A fetch never creates
+one. `DeleteRepository` frees the key at once. Enroute reclaims the stored layers in
+the background after a retention delay. A new repository can use the key
+immediately.
+
+## Retention
 
 Enroute does not garbage-collect objects made unreachable by branch deletion.
-Delete the repository to remove its data. Configure encryption at rest in
-Postgres and the object store; Enroute does not provide it. Fetches that
-include `have` lines receive a complete pack rather than a thin pack.
+Delete the repository to remove its data. Configure encryption at rest in the
+object store and on the ledger disks; Enroute does not provide it. See
+[Storage backends](../operate/storage-backends.md).

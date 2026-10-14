@@ -1,0 +1,42 @@
+[package]
+name = "enroute-shared"
+description = "What every Enroute node shares: the ledger protocol, the object store, the node registry and repository state."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Waived until this crate's code meets these `cargo xtask lint` rules.
+[package.metadata.xtask]
+lint-debt = ["comments"]
+
+# The generated code that `build.rs` includes names it.
+[package.metadata.cargo-machete]
+ignored = ["tonic-prost"]
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+hex.workspace = true
+object_store.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tracing.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+protox.workspace = true
+tonic-prost-build.workspace = true

@@ -15,6 +15,8 @@ workspace = true
 [dependencies]
 base64.workspace = true
 ed25519-dalek.workspace = true
+# Parses `Signature-Input` and `Signature`, which may carry labels of others.
+sfv.workspace = true
 http.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

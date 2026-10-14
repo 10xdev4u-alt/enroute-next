@@ -1,8 +1,8 @@
 # Patterns
 
-The [Build a code hosting platform](../build/README.md) guide gets Git working: clone, push, and pages to
-read the result on. These patterns build on it. None of them is
-needed to serve Git.
+The [Build a code-hosting application](../build/README.md) guide gets Git
+working: clone, push, and pages to read the result on. These patterns build on
+it. None of them is needed to serve Git.
 
 Each page is written against the app the guide produces, and changes a part of
 it. Read the one you want; they do not need to be read in order.
@@ -32,8 +32,8 @@ These hold everywhere and are stated once, where they belong:
 | --- | --- |
 | The key is yours, and the create is idempotent on it | [Repository keys](../reference/the-contract.md#repository-keys) |
 | `actor` is an ID in your namespace, never a credential | [`authorize`](../reference/hooks.md#authorize) |
-| An absent object ID is an unset field, never forty zeros | [`ObjectId`](../reference/hooks.md#objectid) |
-| A refusal is per ref, and an unjudged command fails the push | [`pre_receive`](../reference/hooks.md#pre_receive) |
+| An absent object ID is an unset field, never forty zeroes | [`ObjectId`](../reference/hooks.md#objectid) |
+| A refusal is per ref unless the push is atomic, and an unjudged command fails the push | [`pre_receive`](../reference/hooks.md#pre_receive) |
 | Enroute holds no policy of its own | [Hooks](../concepts/hooks.md) |
 
 Two rules are about design rather than the contract, and every page here
@@ -44,9 +44,9 @@ pushing is not a policy. What a merge is gated on belongs in your app's own
 configuration, reviewed and deployed like the rest of it, never in a file in
 the branch under test.
 
-`UpdateRefs` does not run `pre_receive`. Use it for application-controlled
-merges instead of introducing a privileged Git identity solely to bypass a
-push rule.
+**Your app merges through the API, not as a pusher.** `UpdateRefs` does not
+run `pre_receive`. Use it for application-controlled merges instead of
+introducing a privileged Git identity solely to bypass a push rule.
 
 ## Examples
 

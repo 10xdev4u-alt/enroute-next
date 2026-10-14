@@ -1,14 +1,13 @@
 //! Holds what the skill ships to what this repository holds.
 //!
 //! `npx skills add` installs a skill directory and nothing else of the
-//! repository, so the skill carries its own copy of the contract and of the
-//! local stack. Copies drift, and these are the ones nothing here builds or
-//! runs, so nothing but this would notice.
+//! repository, so the skill carries its own copy of the contract. Copies
+//! drift, and nothing here builds them, so nothing but this would notice.
 //!
 //! # What is checked how
 //!
-//! Byte-identical, except the two `compose.yaml`: one builds from source and
-//! one runs the published image, so only their services are compared.
+//! The contract is byte-identical. The image the skill runs names this
+//! release.
 //!
 //! # The file that names the skill
 //!
@@ -32,19 +31,14 @@ const MANIFEST: &str = "SKILL.md";
 /// the whole of it.
 const REQUIRED: &[&str] = &["name", "description"];
 
-/// The published image, which the skill's stack starts and this repository's
-/// own does not.
+/// The published image, which the skill runs.
 const IMAGE: &str = "ghcr.io/enroute-sh/enroute";
+
+/// The pages that tell an agent which image to run, inside the skill.
+const RUNS: &[&str] = &[MANIFEST, "references/local-stack.md"];
 
 /// Trees the skill mirrors whole, as `(here, inside the skill)`.
 const TREES: &[(&str, &str)] = &[("proto/enroute", "proto/enroute")];
-
-/// Single files the skill mirrors, as `(here, inside the skill)`.
-const FILES: &[(&str, &str)] = &[("dev/config/enroute.toml", "stack/config/enroute.toml")];
-
-/// The two stack definitions, compared by what they declare rather than byte
-/// for byte.
-const COMPOSE: (&str, &str) = ("compose.yaml", "stack/compose.yaml");
 
 use super::Violation;
 
@@ -54,11 +48,9 @@ pub(crate) fn check(root: &Path) -> Vec<Violation> {
     for (here, there) in TREES {
         violations.extend(tree(root, here, there));
     }
-    for (here, there) in FILES {
-        violations.extend(file(root, here, there));
+    for page in RUNS {
+        violations.extend(pin(root, page));
     }
-    violations.extend(compose(root));
-    violations.extend(pin(root));
     violations.extend(frontmatter(root));
 
     violations
@@ -153,31 +145,33 @@ fn line_of(text: &str, key: &str) -> Option<usize> {
         .map(|index| index + 1)
 }
 
-/// The image the skill's stack starts, which must be this release.
+/// The image the skill tells an agent to run, which must be this release.
 ///
 /// A skill ships beside one release and its proto describes that Enroute, so
 /// pinning is what keeps an old skill correct instead of silently newer.
-fn pin(root: &Path) -> Vec<Violation> {
-    let (_, there) = COMPOSE;
-    let copy = root.join(SKILL).join(there);
-    let (Some(version), Ok(text)) = (workspace_version(root), std::fs::read_to_string(&copy))
+fn pin(root: &Path, page: &str) -> Vec<Violation> {
+    let file = root.join(SKILL).join(page);
+    let (Some(version), Ok(text)) = (workspace_version(root), std::fs::read_to_string(&file))
     else {
         return Vec::new();
     };
 
-    match pinned(&text) {
-        Some(pinned) if pinned == version => Vec::new(),
-        Some(pinned) => vec![Violation {
-            file: copy,
-            line: None,
-            message: format!("starts Enroute {pinned}; this release is {version}"),
-        }],
-        None => vec![Violation {
-            file: copy,
+    let pins = pinned(&text);
+    if pins.is_empty() {
+        return vec![Violation {
+            file,
             line: None,
             message: format!("names no Enroute image: expected `{IMAGE}:{version}`"),
-        }],
+        }];
     }
+    pins.into_iter()
+        .filter(|(_, pinned)| *pinned != version)
+        .map(|(line, pinned)| Violation {
+            file: file.clone(),
+            line: Some(line),
+            message: format!("starts Enroute {pinned}; this release is {version}"),
+        })
+        .collect()
 }
 
 /// `version` from `[workspace.package]`.
@@ -194,14 +188,23 @@ fn workspace_version(root: &Path) -> Option<String> {
     Some(version.to_string())
 }
 
-/// The tag the stack starts Enroute from.
+/// Each tag the text names the image by, as `(line, tag)`.
 ///
 /// Whatever follows the image name, so a moving tag and a variable are both
 /// read rather than skipped: each is a way for the pin to stop being one.
-fn pinned(text: &str) -> Option<String> {
-    text.lines()
-        .find_map(|line| line.trim().strip_prefix(&format!("image: {IMAGE}:")))
-        .map(|tag| tag.trim().to_string())
+fn pinned(text: &str) -> Vec<(usize, String)> {
+    let prefix = format!("{IMAGE}:");
+    let mut pins = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        for rest in line.split(prefix.as_str()).skip(1) {
+            let tag: String = rest
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '`')
+                .collect();
+            pins.push((index + 1, tag));
+        }
+    }
+    pins
 }
 
 /// Every `.proto` under both, matched in both directions.
@@ -254,98 +257,6 @@ fn tree(root: &Path, here: &str, there: &str) -> Vec<Violation> {
     }
 
     violations
-}
-
-/// One mirrored file, which must match byte for byte.
-///
-/// Gone on either side is a finding too: a pair that quietly stops being
-/// compared is how the skill ships a file the repository has deleted.
-fn file(root: &Path, here: &str, there: &str) -> Vec<Violation> {
-    let copy = root.join(SKILL).join(there);
-    let ours = std::fs::read(root.join(here));
-    let theirs = std::fs::read(&copy);
-
-    match (ours, theirs) {
-        (Ok(ours), Ok(theirs)) if ours == theirs => Vec::new(),
-        (Ok(_), Ok(_)) => vec![Violation {
-            file: copy,
-            line: None,
-            message: format!("differs from {here}: the skill's stack would behave differently"),
-        }],
-        (Err(_), Ok(_)) => vec![Violation {
-            file: copy,
-            line: None,
-            message: format!("{here} is gone; delete this copy or stop mirroring it"),
-        }],
-        (Ok(_), Err(_)) => vec![Violation {
-            file: copy,
-            line: None,
-            message: format!("the skill ships no copy of {here}"),
-        }],
-        (Err(_), Err(_)) => vec![Violation {
-            file: root.join(here),
-            line: None,
-            message: format!("neither {here} nor the skill's copy exists; drop the pair"),
-        }],
-    }
-}
-
-/// The services each `compose.yaml` declares, which must be the same set.
-///
-/// A service added, renamed or dropped here and not there is what breaks the
-/// skill's instructions, and it is the part the two files must agree on.
-fn compose(root: &Path) -> Vec<Violation> {
-    let (here, there) = COMPOSE;
-    let copy = root.join(SKILL).join(there);
-    let Ok(ours) = std::fs::read_to_string(root.join(here)) else {
-        return Vec::new();
-    };
-    let Ok(theirs) = std::fs::read_to_string(&copy) else {
-        return vec![Violation {
-            file: copy,
-            line: None,
-            message: format!("the skill ships no stack: {there} is missing beside {here}"),
-        }];
-    };
-
-    let (ours, theirs) = (services(&ours), services(&theirs));
-    if ours == theirs {
-        return Vec::new();
-    }
-    vec![Violation {
-        file: copy,
-        line: None,
-        message: format!("declares {theirs:?}; {here} declares {ours:?}"),
-    }]
-}
-
-/// The keys one level under `services:`, sorted.
-fn services(text: &str) -> Vec<String> {
-    let mut names = Vec::new();
-    let mut inside = false;
-    for line in text.lines() {
-        if line.starts_with("services:") {
-            inside = true;
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        // A key back at column zero ends the block; a blank line or a comment
-        // does not, since both sit between services.
-        let column_zero = !line.starts_with([' ', '\t']);
-        if column_zero && !line.trim().is_empty() && !line.starts_with('#') {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("  ")
-            && !rest.starts_with([' ', '\t', '#'])
-            && let Some(name) = rest.strip_suffix(':')
-        {
-            names.push(name.to_string());
-        }
-    }
-    names.sort();
-    names
 }
 
 /// Every `.proto` under `dir`, named relative to it.
@@ -460,58 +371,40 @@ mod frontmatter_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::services;
+    use super::pinned;
 
-    #[test]
-    fn it_reads_the_service_keys_and_nothing_below_them() {
-        let yaml = "\
-services:
-  postgres:
-    image: postgres:17-alpine
-    ports:
-      - \"5433:5432\"
-
-  # A comment between services does not end the block.
-  enroute:
-    image: enroute:local
-
-volumes:
-  pgdata:
-";
-        assert_eq!(services(yaml), vec!["enroute", "postgres"]);
+    fn tags(text: &str) -> Vec<String> {
+        pinned(text).into_iter().map(|(_, tag)| tag).collect()
     }
 
     #[test]
-    fn a_file_with_no_services_declares_none() {
-        assert_eq!(services("volumes:\n  pgdata:\n"), Vec::<String>::new());
+    fn it_reads_the_version_a_command_runs() {
+        let text = "docker run --rm \\\n  ghcr.io/enroute-sh/enroute:0.1.0-alpha.1 dev\n";
+        assert_eq!(pinned(text), vec![(2, "0.1.0-alpha.1".to_string())]);
     }
 
     #[test]
-    fn it_reads_the_version_the_stack_starts() {
-        let yaml = "  enroute:\n    image: ghcr.io/enroute-sh/enroute:0.1.0-alpha.1\n";
-        assert_eq!(super::pinned(yaml).as_deref(), Some("0.1.0-alpha.1"));
+    fn it_reads_every_tag_and_stops_at_a_backtick() {
+        let text = "`ghcr.io/enroute-sh/enroute:0.3.0`, then ghcr.io/enroute-sh/enroute:0.2.0\n";
+        assert_eq!(tags(text), ["0.3.0", "0.2.0"]);
     }
 
     /// A moving tag is the drift this rule exists to catch, so it has to be
     /// read rather than skipped.
     #[test]
     fn a_channel_tag_reads_as_the_pin_it_is_not() {
-        let yaml = "    image: ghcr.io/enroute-sh/enroute:alpha\n";
-        assert_eq!(super::pinned(yaml).as_deref(), Some("alpha"));
+        assert_eq!(tags("ghcr.io/enroute-sh/enroute:latest dev\n"), ["latest"]);
     }
 
-    /// So does a variable: it is a pin that whoever runs the stack decides.
+    /// So does a variable: it is a pin that whoever runs the command decides.
     #[test]
     fn a_variable_reads_as_the_pin_it_is_not() {
-        let yaml = "    image: ghcr.io/enroute-sh/enroute:${ENROUTE_VERSION:-alpha}\n";
-        assert_eq!(
-            super::pinned(yaml).as_deref(),
-            Some("${ENROUTE_VERSION:-alpha}")
-        );
+        let text = "ghcr.io/enroute-sh/enroute:${ENROUTE_VERSION:-alpha} dev\n";
+        assert_eq!(tags(text), ["${ENROUTE_VERSION:-alpha}"]);
     }
 
     #[test]
-    fn a_stack_starting_some_other_image_names_no_version() {
-        assert_eq!(super::pinned("    image: enroute:local\n"), None);
+    fn the_bare_image_name_is_no_pin() {
+        assert!(pinned("Every release is `ghcr.io/enroute-sh/enroute`.\n").is_empty());
     }
 }

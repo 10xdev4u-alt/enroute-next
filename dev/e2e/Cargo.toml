@@ -9,32 +9,18 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-bench-support = { path = "../bench-support" }
-enroute-postgres.workspace = true
-enroute-git-test-support.workspace = true
-enroute = { path = "../../crates/server/app" }
+test-support = { path = "../test-support" }
 enroute-api.workspace = true
 enroute-signature.workspace = true
 anyhow.workspace = true
-enroute-git-core.workspace = true
-enroute-git-http.workspace = true
-async-trait.workspace = true
-enroute-git-ingest.workspace = true
-enroute-git-remote.workspace = true
-enroute-git-retrieve.workspace = true
-enroute-git-store.workspace = true
-enroute-git-cost.workspace = true
-gix-hash.workspace = true
 gix-packetline.workspace = true
 
-object_store.workspace = true
 axum.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 tonic.workspace = true
 tonic-reflection.workspace = true
 tokio-stream.workspace = true
-sqlx.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 
@@ -43,3 +29,7 @@ proptest-state-machine.workspace = true
 tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# What the deployment under test runs, named only by `src/engine.rs`.
+enroute = { path = "../.." }
+enroute-compute.workspace = true

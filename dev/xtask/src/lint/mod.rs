@@ -1,9 +1,10 @@
 //! Walks the workspace running every registered lint rule.
 //!
 //! [`imports`]/[`comments`] run per file, [`dead_code`] over all files at
-//! once, [`layering`]/[`workspace_inheritance`]/[`deps`] over manifests, and
-//! [`proto`]/[`skill`] over the wire contract and what the skill copies of
-//! it — room for more as separate modules.
+//! once, [`layering`] over manifests and the compute's modules,
+//! [`workspace_inheritance`]/[`deps`] over manifests, and [`proto`]/[`skill`]
+//! over the wire contract and what the skill copies of it — room for more as
+//! separate modules.
 #![allow(
     clippy::print_stdout,
     clippy::print_stderr,
@@ -12,6 +13,7 @@
 
 mod comments;
 mod dead_code;
+mod debt;
 mod deps;
 mod imports;
 mod layering;
@@ -47,6 +49,19 @@ impl fmt::Display for Violation {
     }
 }
 
+/// A parser for Rust source, or the finding that the grammar did not load.
+fn rust_parser() -> Result<tree_sitter::Parser, Violation> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_rust::LANGUAGE.into())
+        .map_err(|err| Violation {
+            file: PathBuf::from("<tree-sitter>"),
+            line: None,
+            message: format!("failed to load the Rust grammar: {err}"),
+        })?;
+    Ok(parser)
+}
+
 /// Runs an installed checker, returning everything it printed.
 ///
 /// Both streams, since a checker's findings and its complaints do not reliably
@@ -75,11 +90,12 @@ pub(crate) fn run() -> ExitCode {
     };
 
     let workspace_crates = workspace::crate_names(&manifests);
+    let mut debt = debt::Debt::load(&manifests);
     let mut violations = workspace_inheritance::check(&manifests);
     violations.extend(layering::check(&manifests));
     violations.extend(proto::check(&root));
     violations.extend(skill::check(&root));
-    violations.extend(deps::check(&root));
+    violations.extend(debt.waive("deps", deps::check(&root)));
     let mut sources = Vec::new();
 
     for entry in WalkDir::new(&root).into_iter().filter_entry(|entry| {
@@ -110,15 +126,20 @@ pub(crate) fn run() -> ExitCode {
             }
         };
 
-        violations.extend(imports::check(&source, &workspace_crates, entry.path()));
-        violations.extend(comments::check(&source, entry.path()));
+        violations.extend(debt.waive(
+            "imports",
+            imports::check(&source, &workspace_crates, entry.path()),
+        ));
+        violations.extend(debt.waive("comments", comments::check(&source, entry.path())));
         sources.push((entry.path().to_path_buf(), source));
     }
 
-    violations.extend(dead_code::check(
-        &sources,
-        &workspace::crate_roots(&manifests),
+    violations.extend(layering::check_modules(&sources, &root));
+    violations.extend(debt.waive(
+        "dead_code",
+        dead_code::check(&sources, &workspace::crate_roots(&manifests)),
     ));
+    violations.extend(debt.stale());
 
     report(&violations)
 }

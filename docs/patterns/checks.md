@@ -108,7 +108,7 @@ comparison instead of a state machine.
 ## Scope
 
 **It runs nothing and schedules nothing.** If no reporter posts, no check is
-"failed". It is absent, and absent blocks. That is the intended behaviour, and
+"failed". It is absent, and absent blocks. That is the intended behavior, and
 it is why the required set belongs in your app's configuration and not
 anywhere a branch can reach.
 

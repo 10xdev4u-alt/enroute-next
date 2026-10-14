@@ -76,8 +76,17 @@ pub(crate) struct RefState {
     /// Opaque ids of every commit made so far, regardless of which client.
     ///
     /// Every branch is merged before its turn ends, so any id here is
-    /// guaranteed reachable from `main` — safe for `CreateTag` to pick from.
+    /// reachable from `main`, and the last one is `main`'s tip.
     commits: Vec<u32>,
+    /// The commits each client's clone can surely find, which `CreateTag`
+    /// picks from.
+    ///
+    /// Not `commits`: the model cannot place a shallow clone's boundary, so a
+    /// shallow sync keeps only what it surely fetched.
+    held: BTreeMap<ClientId, BTreeSet<u32>>,
+    /// Commits made in the current turn, which the next client's plain
+    /// pull fetches.
+    turn_commits: Vec<u32>,
     next_commit_id: u32,
     /// Tag names already in use, so the generator never proposes a
     /// duplicate.
@@ -116,6 +125,34 @@ impl RefState {
     /// history (`None`) for a client that has never resynced.
     fn depth_of(&self, client: ClientId) -> Option<u32> {
         self.depths.get(&client).copied().flatten()
+    }
+
+    /// Record a commit the current client just made.
+    fn mint(&mut self, commit_id: u32) {
+        debug_assert_eq!(commit_id, self.next_commit_id);
+        self.next_commit_id += 1;
+        self.commits.push(commit_id);
+        self.turn_commits.push(commit_id);
+        self.held.entry(self.current).or_default().insert(commit_id);
+    }
+
+    /// Update what `client` holds after it syncs with `sync`.
+    fn sync_held(&mut self, client: ClientId, sync: SyncKind) {
+        let tip = self.commits.last().copied();
+        let held = self.held.entry(client).or_default();
+        if self.depths.get(&client).copied().flatten().is_none() {
+            held.extend(self.commits.iter().copied());
+        } else if sync.resync == ResyncKind::Fresh || sync.depth.is_some() {
+            // A new boundary hides whatever is past it from `git log`, and
+            // only `main`'s tip is surely inside it.
+            held.clear();
+            held.extend(tip);
+        } else {
+            // A plain pull into a shallow clone fetches every new commit:
+            // their parents are commits the client already has.
+            held.extend(self.turn_commits.iter().copied());
+            held.extend(tip);
+        }
     }
 }
 
@@ -245,11 +282,11 @@ pub(crate) enum Transition {
     SubmoduleUpdate { path: String, oid: String },
     /// Stage removing an existing submodule's gitlink entry.
     SubmoduleRemove(String),
-    /// Run a maintenance pass over the repository, and read it all back.
+    /// Wait for maintenance of the repository to settle, and read it all back.
     ///
     /// The model does nothing with this, which is the whole claim: a pass
     /// must be invisible to every git client.
-    Maintain { patience: Patience },
+    Maintain,
 }
 
 /// How far `main` has got, which decides what is legal next.
@@ -272,15 +309,6 @@ impl History {
     pub(crate) fn any_commits(self) -> bool {
         self != Self::Unborn
     }
-}
-
-/// How long a generated maintenance pass waits before reclaiming.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Patience {
-    /// A deployment's own windows: what a pass does hour to hour.
-    Patient,
-    /// No window at all, so one pass runs every stage of a reclaim at once.
-    Impatient,
 }
 
 /// `EndTurn`'s `sync` argument for a target client currently at `current_depth`.
@@ -585,23 +613,24 @@ impl ReferenceStateMachine for OracleStateMachine {
         // there is something in the repository to maintain. Rare, because it
         // reads the whole repository back and a run should mostly be pushing.
         let base = if state.history == History::Pushed {
-            let maintain = prop_oneof![
-                1 => Just(Transition::Maintain { patience: Patience::Patient }),
-                1 => Just(Transition::Maintain { patience: Patience::Impatient }),
-            ]
-            .boxed();
+            let maintain = Just(Transition::Maintain).boxed();
             Union::new_weighted(vec![(12, base), (1, maintain)]).boxed()
         } else {
             base
         };
 
         // Tagging is orthogonal to the WorkTree state machine above — it just
-        // needs a commit from the ever-growing `commits` pool, so it's
-        // available alongside whatever else is legal right now.
-        if state.commits.is_empty() {
+        // needs a commit the current client holds, so it's available
+        // alongside whatever else is legal right now.
+        let held: Vec<u32> = state
+            .held
+            .get(&state.current)
+            .map(|held| held.iter().copied().collect())
+            .unwrap_or_default();
+        if held.is_empty() {
             base
         } else {
-            let commit_ids = state.commits.clone();
+            let commit_ids = held;
             let existing_tags = state.tags.clone();
             let tag_op = (
                 proptest::sample::select(commit_ids),
@@ -668,7 +697,7 @@ impl ReferenceStateMachine for OracleStateMachine {
             // Nothing. A pass moves bytes between objects and rewrites an
             // index; a git client must not be able to tell it ran, and the
             // model holding still is how that is asserted.
-            Transition::Maintain { .. } => {}
+            Transition::Maintain => {}
             Transition::Commit { commit_id } => {
                 let was_branch_staged = state.work == WorkTree::BranchStaged;
                 state.work = match state.work {
@@ -681,9 +710,7 @@ impl ReferenceStateMachine for OracleStateMachine {
                 if was_branch_staged {
                     state.branch_has_commits = true;
                 }
-                debug_assert_eq!(*commit_id, state.next_commit_id);
-                state.next_commit_id += 1;
-                state.commits.push(*commit_id);
+                state.mint(*commit_id);
             }
             Transition::EndTurn { sync } => {
                 state.history = state.history.max(History::Pushed);
@@ -695,6 +722,8 @@ impl ReferenceStateMachine for OracleStateMachine {
                 if replaces_depth {
                     state.depths.insert(next, sync.depth);
                 }
+                state.sync_held(next, *sync);
+                state.turn_commits.clear();
                 state.current = next;
                 state.turn_dirty = false;
             }
@@ -711,9 +740,7 @@ impl ReferenceStateMachine for OracleStateMachine {
             } => {
                 state.work = WorkTree::Clean;
                 state.turn_dirty = true;
-                debug_assert_eq!(*commit_id, state.next_commit_id);
-                state.next_commit_id += 1;
-                state.commits.push(*commit_id);
+                state.mint(*commit_id);
                 debug_assert_eq!(state.open_branch, Some(*branch_id));
                 state.open_branch = None;
             }
@@ -746,27 +773,45 @@ impl ReferenceStateMachine for OracleStateMachine {
                     && !state.paths.contains_key(to)
                     && !path_conflicts(state.paths.keys().filter(|p| *p != from), to)
             }
-            Transition::CopyDir { from, .. } => is_copyable(state, from),
+            // Minted ids must stay dense when shrinking removes a transition.
+            Transition::CopyDir { from, copy_id } => {
+                *copy_id == state.next_copy_id && is_copyable(state, from)
+            }
             Transition::SubmoduleUpdate { path, .. } | Transition::SubmoduleRemove(path) => {
                 state.paths.get(path) == Some(&PathKind::Submodule)
             }
-            Transition::Commit { .. } => {
-                matches!(state.work, WorkTree::Staged | WorkTree::BranchStaged)
+            Transition::Commit { commit_id } => {
+                *commit_id == state.next_commit_id
+                    && matches!(state.work, WorkTree::Staged | WorkTree::BranchStaged)
             }
             Transition::EndTurn { .. } => state.turn_dirty && state.work == WorkTree::Clean,
-            Transition::BranchStart { .. } => {
-                state.work == WorkTree::Clean && state.history.any_commits()
+            Transition::BranchStart { branch_id } => {
+                *branch_id == state.next_branch_id
+                    && state.work == WorkTree::Clean
+                    && state.history.any_commits()
             }
-            Transition::BranchMerge { .. } => {
-                state.work == WorkTree::Branch && state.branch_has_commits
+            Transition::BranchMerge {
+                commit_id,
+                branch_id,
+            } => {
+                *commit_id == state.next_commit_id
+                    && state.open_branch == Some(*branch_id)
+                    && state.work == WorkTree::Branch
+                    && state.branch_has_commits
             }
             Transition::CreateTag {
                 commit_id, name, ..
-            } => state.commits.contains(commit_id) && !state.tags.contains(name),
+            } => {
+                state
+                    .held
+                    .get(&state.current)
+                    .is_some_and(|held| held.contains(commit_id))
+                    && !state.tags.contains(name)
+            }
             // Legal at any point, including mid-turn with work staged: a
             // pass runs against what has landed, and what a client has not
             // pushed yet is no business of it.
-            Transition::Maintain { .. } => state.history == History::Pushed,
+            Transition::Maintain => state.history == History::Pushed,
         }
     }
 }
@@ -819,6 +864,13 @@ mod tests {
             prop_assert!(
                 state.commits.contains(commit_id),
                 "CreateTag generated for a commit id not yet minted: {commit_id}"
+            );
+            prop_assert!(
+                state
+                    .held
+                    .get(&state.current)
+                    .is_some_and(|held| held.contains(commit_id)),
+                "CreateTag generated for a commit the client may not hold: {commit_id}"
             );
         }
         if matches!(transition, Transition::EndTurn { .. }) {
@@ -901,6 +953,66 @@ mod tests {
             ),
             "EndTurn must be legal after CreateTag so the tag can be pushed"
         );
+    }
+
+    /// Regression: `CreateTag` on an older commit waits after a shallow clone.
+    ///
+    /// A `--depth=1` clone holds only `main`'s tip, and the harness's
+    /// `git log --grep` would find no older commit.
+    #[test]
+    fn create_tag_skips_commits_past_a_shallow_boundary() {
+        let mut state = RefState::default();
+        for commit_id in 0..2 {
+            state = OracleStateMachine::apply(
+                state,
+                &Transition::Create {
+                    name: format!("f{commit_id}"),
+                    content: vec![],
+                },
+            );
+            state = OracleStateMachine::apply(state, &Transition::Commit { commit_id });
+        }
+        let shallow = SyncKind {
+            resync: ResyncKind::Fresh,
+            filter: None,
+            depth: Some(1),
+        };
+        let state = OracleStateMachine::apply(state, &Transition::EndTurn { sync: shallow });
+        let tag = |commit_id| Transition::CreateTag {
+            commit_id,
+            name: "v".to_string(),
+            annotated: true,
+        };
+        assert!(
+            !OracleStateMachine::preconditions(&state, &tag(0)),
+            "commit 0 is past the boundary"
+        );
+        assert!(
+            OracleStateMachine::preconditions(&state, &tag(1)),
+            "commit 1 is the tip"
+        );
+    }
+
+    /// Regression: preconditions reject a minted id out of order.
+    ///
+    /// Shrinking drops transitions, and `apply` asserts on the ids after them.
+    #[test]
+    fn preconditions_reject_ids_out_of_order() {
+        let state = OracleStateMachine::apply(
+            RefState::default(),
+            &Transition::Create {
+                name: "a".to_string(),
+                content: vec![],
+            },
+        );
+        assert!(!OracleStateMachine::preconditions(
+            &state,
+            &Transition::Commit { commit_id: 1 }
+        ));
+        assert!(OracleStateMachine::preconditions(
+            &state,
+            &Transition::Commit { commit_id: 0 }
+        ));
     }
 
     #[test]

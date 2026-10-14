@@ -18,7 +18,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run repo-wide lint checks (currently: import grouping).
+    /// Run the repository-wide lint rules.
     Lint,
 }
 

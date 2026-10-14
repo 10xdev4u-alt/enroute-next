@@ -27,7 +27,7 @@ four. A call added to the contract later then asks you to mount nothing new.
 ## Read the raw bytes
 
 The signature covers exactly the bytes that arrived. Anything that parses,
-re-encodes, or normalises the body first breaks every call.
+re-encodes, or normalizes the body first breaks every call.
 
 In a Next.js route handler, `request.arrayBuffer()` gives you those bytes.
 Read the body once and use the same bytes for the digest check and the
@@ -93,23 +93,25 @@ Create `lib/hooks/signature.ts`:
 
 ```ts
 import { createHash, createPublicKey, verify as verifyEd25519 } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { httpbis } from "http-message-signatures";
 
 // The public half of the key the deployment signs with. Ask the operator for
-// it. This value pairs with the RFC 9421 test key the local stack uses.
+// it. `enroute dev --hooks` writes it to this file.
 const PUBLIC_KEY = createPublicKey(
   process.env.ENROUTE_HOOK_PUBLIC_KEY ??
-    `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAJrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs=
------END PUBLIC KEY-----`,
+    readFileSync(".enroute/dev/hooks-signing-key.pub.pem", "utf8"),
 );
 
 // Exactly the hooks.endpoint_url Enroute is configured with.
 const ENDPOINT =
-  process.env.ENROUTE_HOOK_URL ??
-  "http://host.docker.internal:3000/api/enroute/hooks";
+  process.env.ENROUTE_HOOK_URL ?? "http://localhost:3000/api/enroute/hooks";
 
-const KEYID = process.env.ENROUTE_HOOK_KEYID ?? "poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U";
+// The RFC 7638 thumbprint of the public key, as Enroute computes it.
+const { x } = PUBLIC_KEY.export({ format: "jwk" });
+const KEYID = createHash("sha256")
+  .update(`{"crv":"Ed25519","kty":"OKP","x":"${x}"}`)
+  .digest("base64url");
 const MAX_SKEW_SECONDS = 300;
 
 const key = {
@@ -168,8 +170,8 @@ taken from the request. If the two differ by one byte, every call is a `401`
 and nothing says why.
 
 > **Note:** `@authority` includes a port only when the URL names one. Enroute
-> signs over the configured URL, so `host.docker.internal:3000` carries its
-> port and a public `https://example.com` does not.
+> signs over the configured URL, so `localhost:3000` carries its port and a
+> public `https://example.com` does not.
 
 Before you trust any library, run the
 [test vector](../reference/verify-the-signature.md#test-vector) through it. That page also

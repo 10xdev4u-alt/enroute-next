@@ -1,0 +1,22 @@
+[package]
+name = "test-support"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axum.workspace = true
+
+# `collect`: the span aggregation.
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# `hooks`: the endpoint protocol, and the signature no stub may skip.
+enroute-api.workspace = true
+enroute-signature.workspace = true
+base64.workspace = true
+prost.workspace = true

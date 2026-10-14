@@ -2,18 +2,18 @@
 //!
 //! Enroute serves no git until an application says which repository a URL
 //! names and who is asking. The endpoint itself, signature check included, is
-//! shared with the bench harnesses; what is here is the map of repositories,
+//! shared with `tests/`; what is here is the map of repositories,
 //! the one ref it refuses, the one it judges neither way, the one it hides,
-//! and the record of every push it was told had landed.
+//! and the record of every push it was asked about or told had landed.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use axum::Router;
 
-use bench_support::hooks::Policy;
 use enroute_api::hook::v1alpha1 as pb;
 use enroute_signature::VerifyingKey;
+use test_support::hooks::Policy;
 
 /// Who a granted request is attributed to, which a hook can gate on.
 pub(crate) const ACTOR: &str = "alice";
@@ -57,6 +57,7 @@ pub(crate) struct Repos(Arc<Mutex<HashMap<String, String>>>);
 
 impl Repos {
     /// Name `id` — the id Enroute minted — as `name`, in the builder style.
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn with(self, name: &str, id: impl std::fmt::Display) -> Self {
         self.name(name, id);
@@ -76,12 +77,18 @@ impl Repos {
     }
 }
 
-/// Every `post-receive` this application has been told about, newest last.
+/// Every `post-receive` this application has been told about, newest last,
+/// and the refnames of every `pre-receive` it was asked.
 ///
 /// Shared with whoever built it, like [`Repos`], because the whole of what a
-/// test can assert about this hook is that it arrived and what it said.
+/// test can assert about these hooks is that they arrived and what they said.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct Landed(Arc<Mutex<Vec<Push>>>);
+pub(crate) struct Landed {
+    pushes: Arc<Mutex<Vec<Push>>>,
+    /// A test that expects no `pre-receive` call needs a record of calls,
+    /// since a refusal it never gave looks the same as one it was not asked for.
+    asked: Arc<Mutex<Vec<Vec<String>>>>,
+}
 
 /// One push Enroute said had landed.
 ///
@@ -112,10 +119,26 @@ impl Landed {
     #[cfg(test)]
     #[must_use]
     pub(crate) fn seen(&self) -> Vec<Push> {
-        self.0
+        self.pushes
             .lock()
             .expect("the stub application's landed pushes")
             .clone()
+    }
+
+    /// The refnames of each `pre-receive` call, in the order they came.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn asked(&self) -> Vec<Vec<String>> {
+        self.asked
+            .lock()
+            .expect("the stub application's pre-receive calls")
+            .clone()
+    }
+
+    fn ask(&self, call: &pb::PreReceiveRequest) {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push(call.commands.iter().map(|c| c.refname.clone()).collect());
+        }
     }
 
     fn record(&self, call: &pb::PostReceiveRequest) {
@@ -139,7 +162,7 @@ impl Landed {
                 .collect(),
         };
         tracing::info!(repo = %push.repo, commands = push.commands.len(), "post-receive");
-        if let Ok(mut seen) = self.0.lock() {
+        if let Ok(mut seen) = self.pushes.lock() {
             seen.push(push);
         }
     }
@@ -152,7 +175,7 @@ pub(crate) fn router(
     keys: Vec<VerifyingKey>,
     public_url: &str,
 ) -> Router {
-    bench_support::hooks::router(Stub { repos, landed }, keys, public_url)
+    test_support::hooks::router(Stub { repos, landed }, keys, public_url)
 }
 
 #[derive(Clone)]
@@ -178,6 +201,7 @@ impl Policy for Stub {
     /// A real application decides this from context this does not have, so it answers
     /// by name — enough to prove a rejection reaches the git client.
     fn pre_receive(&self, call: &pb::PreReceiveRequest) -> pb::PreReceiveResponse {
+        self.landed.ask(call);
         pb::PreReceiveResponse {
             judgements: call
                 .commands

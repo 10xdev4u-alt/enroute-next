@@ -1,47 +1,75 @@
 # Maintenance
 
-Maintenance runs work that should not delay Git requests. Each pass:
+Enroute has no scheduler to set up. Each node runs its upkeep in the
+background.
 
-1. Removes repositories deleted longer than `deleted_grace_secs`.
-2. Combines pack images.
-3. Merges index segments.
-4. Removes old orphaned pack images and segments.
+## Automatic work
 
-Combining pack images does not repack objects or reclaim objects from deleted
+For each repository, one compute node runs this work:
+
+1. Flushes small layers from the replicated log to the object store.
+2. Merges layers of a similar size into a larger one. A large layer merges
+   again only after the repository grows by about its size.
+3. Removes layer files that no repository state names, once they have been
+   unused for six hours. The delay lets slow readers finish.
+
+Ledger nodes write a checkpoint of each changed repository to the object store
+within a minute.
+
+When you delete a repository, the key is free at once. The sweep reclaims the
+layer files in the background after the same delay.
+
+Merging layers does not repack objects or reclaim objects from deleted
 branches. Delete the repository to reclaim that data.
 
-## Running maintenance
+The keys in `[layers]` and `[ledger]` tune this work. The defaults suit most
+deployments. See [Configuration keys](../reference/configuration-keys.md).
 
-`[maintenance.run.in-process]` runs a pass in the server at `interval_secs`
-(900 seconds by default). `[maintenance.run.off]` disables it so an external
-scheduler can run `enroute-maintenance`. Running both is safe. Steps are
-idempotent; pack gathering uses a per-repository lock and skips busy work.
+## Add ledger nodes
 
-Build the CLI from source:
+Start a new ledger node with the same `bucket` and an `advertise_url`. It
+joins the ledger and becomes a voter in every repository's log. Adding a node
+adds fault tolerance, not capacity.
+
+## Remove a ledger node
+
+A node that lost its disk comes back as a new node. The old node stays a
+member until you remove it. A dead member counts against the majority, so
+remove it.
+
+Use `enroute members`. Give it the same configuration as the nodes. It reads
+only the `[bucket]` table, but the whole file must load, so the variables
+that the file names must be set.
 
 ```sh
-cargo build --release -p enroute --bin enroute-maintenance
-enroute-maintenance --config file:///etc/enroute/enroute.toml
-enroute-maintenance --config file:///etc/enroute/enroute.toml --every 900
+enroute members --config file:///etc/enroute/enroute.toml
+enroute members --config file:///etc/enroute/enroute.toml --remove 2
 ```
 
-Without `--every`, the command runs once. `--dry-run` reports eligible work
-without changing data.
+Add `--json` to print the members and the removed nodes as JSON.
 
-## Retention windows
+In a container, run it with `docker exec`:
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `maintenance.grace_secs` | `21600` | Minimum age before an unreferenced object is removed |
-| `maintenance.deleted_grace_secs` | `86400` | Time before a deleted repository is erased |
+```sh
+docker exec <container> enroute members --config file:///etc/enroute/enroute.toml
+```
 
-Keep `grace_secs` longer than the longest push. Uploaded bytes are
-unreferenced until their catalog transaction commits.
+Without `--remove`, the command lists the members and the removed nodes. With
+`--remove <id>`, it removes one node for good, and the logs then drop it. The
+command refuses to remove a node if the members that remain would not have a
+live majority. `--force` removes it anyway.
 
-A deleted repository can be restored before `deleted_grace_secs` by clearing
-`repositories.deleted_at`, provided its key has not been reused.
+## Recover from losing a majority
+
+If a majority of ledger nodes lose their disks, the repositories on them cannot
+accept writes. Recovery is manual, from the last checkpoint in the object
+store. Up to about a minute of writes can be lost. There is no tool for this
+yet.
+
+Prevent it. Keep ledger disks durable and spread the nodes over failure
+domains.
 
 ## Monitoring
 
-Maintenance has no metrics. It logs every pass; alert on stalled or failed
-passes.
+Background work has no metrics. Enroute logs its failures. Alert on `ERROR`
+logs from each node.

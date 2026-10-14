@@ -6,8 +6,8 @@ not exchange requests yet.
 
 ## Before you start
 
-Complete the [Quickstart](../quickstart.md). Enroute must be running, with Git
-on `127.0.0.1:8080` and the API on `127.0.0.1:50051`.
+Complete the [Quickstart](../quickstart.md). The `enroute` command must be
+installed.
 
 ## Create the project
 
@@ -34,37 +34,61 @@ would take `/enroute/hooks`.
 Put the route in the namespace Next.js keeps for machine traffic:
 
 ```text
-http://host.docker.internal:3000/api/enroute/hooks
+http://localhost:3000/api/enroute/hooks
 ```
-
-Enroute runs in a container, so it reaches your development server at
-`host.docker.internal` rather than `127.0.0.1`.
 
 ## Point Enroute at it
 
-Edit `config/enroute.toml` in the stack you started in the quickstart:
+Stop the `enroute dev` from the quickstart. In the `codehost` directory, start
+it again with the hook URL:
 
-```toml
-[hooks]
-endpoint_url = "http://host.docker.internal:3000/api/enroute/hooks"
+```sh
+enroute dev --hooks http://localhost:3000/api/enroute/hooks --enable authorize
 ```
 
-Configuration is read once, so apply it with `docker compose restart enroute`.
+Every hook is opt-in. Enable a hook only when your app answers it, because
+Enroute refuses a Git request when an enabled hook gets no answer. This guide
+enables `authorize` now, so that chapter 3 can see a signed request arrive, and
+chapter 4 implements it. Chapter 5 enables `pre_receive` and `post_receive`.
+Without `--enable`, `--hooks` enables all four hooks.
 
-Write this URL down. Chapter 3 verifies signatures against it, and the two
+On the first run, Enroute generates a signing
+key and keeps it in `.enroute/dev` for later runs. The banner shows the key ID
+and the path of the public key, `.enroute/dev/hooks-signing-key.pub.pem`.
+Chapter 3 verifies signatures with that file.
+
+Keep the directory out of Git:
+
+```sh
+echo ".enroute/" >> .gitignore
+```
+
+Write the URL down. Chapter 3 verifies signatures against it, and the two
 must match byte for byte. Enroute signs over the URL you configured here, not
 over the `Host` header that arrives.
 
+A deployment sets the same values in its configuration file:
+
+```toml
+[hooks]
+enabled = ["authorize"]
+endpoint_url = "https://codehost.example.com/api/enroute/hooks"
+signing_key = "${ENROUTE_HOOK_SIGNING_KEY}"
+```
+
+Add each hook to `enabled` when your app answers it. See
+[Configuration](../operate/configuration.md).
+
 ## Get the contract
 
-Copy the proto files out of the image you run, so that your code builds
-against the contract that image serves:
+Copy the proto files out of the Enroute checkout that you installed from, so
+that your code builds against the contract that `enroute` serves:
 
 ```sh
-docker create --name enroute-proto ghcr.io/enroute-sh/enroute:latest
-mkdir -p proto && docker cp enroute-proto:/usr/share/enroute/proto/enroute proto/
-docker rm enroute-proto
+mkdir -p proto && cp -R <enroute checkout>/proto/enroute proto/
 ```
+
+The image carries the same files at `/usr/share/enroute/proto`.
 
 Commit the copy. Do not add the Enroute repository as a build dependency:
 `v1alpha1` can change before `1.0.0`, and a contract that moves under your
@@ -93,11 +117,11 @@ Add the command to `package.json`:
 }
 ```
 
-Six files are generated, in three packages:
+Seven files are generated, in three packages:
 
 | Package | Holds |
 | --- | --- |
-| `enroute.api.v1alpha1` | The four services your app calls |
+| `enroute.api.v1alpha1` | The five services your app calls |
 | `enroute.hook.v1alpha1` | `HookRequest` and `HookResponse`, which Enroute sends you |
 | `enroute.common.v1alpha1` | `RepoKey` and `ObjectId`, used by both |
 
@@ -126,11 +150,11 @@ npm run dev
 Enroute answers, independently of your app:
 
 ```sh
-grpcurl -plaintext 127.0.0.1:50051 list
+enroute repo list
 ```
 
-Four services are listed. Git does not serve anything yet, because no endpoint
-answers Enroute's questions. That starts in chapter 4.
+The command exits with no error. Git does not serve anything yet, because
+`authorize` is enabled and no endpoint answers it. That starts in chapter 4.
 
 ## Result
 

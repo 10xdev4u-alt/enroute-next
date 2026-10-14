@@ -1,14 +1,20 @@
-# Internals
+# Architecture
 
-These pages are for contributors to Enroute itself.
+These pages tell how Enroute works inside: how it stores, replicates, and
+serves repositories, and how it is tested. You do not need them to run Enroute
+or to build on it.
 
-Start with Development to run the local stack and required checks. Read Quality
-assurance before changing behavior covered by end-to-end or contract tests.
-Architecture describes the storage and crate boundaries that changes must
-preserve.
+Read the pages in the order below. Each one describes the system as built.
 
 | Page | Covers |
 | --- | --- |
-| [Development](development.md) | Local stack, migrations, checks, and protocol changes |
-| [Quality assurance](quality-assurance.md) | Test suites, commands, and known gaps |
-| [Architecture](architecture.md) | Storage design, ingestion, and crate boundaries |
+| [Overview](overview.md) | Goals, the three tiers of state, protocol, and components |
+| [Consensus](consensus.md) | One Raft log per repository, the log store, the state store, and recovery |
+| [Ledger and compute](ledger-and-compute.md) | The two roles, subscriptions, membership, checkpoints, and ownership |
+| [Storage](storage.md) | Layers, object ids, the storage service, the buffer pool, and tiered reads |
+| [Write path](write-path.md) | Push, durability without waiting for the object store, and hooked pushes |
+| [Read path](read-path.md) | Fetch planning and streaming, node-private views, and the node catalog |
+| [Serving](serving.md) | What the compute exposes: smart HTTP, hooks, and the API |
+| [Lifecycle](lifecycle.md) | Create, delete, incarnations, and reclaiming files |
+| [Maintenance](maintenance.md) | Compaction, the layer sweep, and garbage collection |
+| [Jepsen tests](jepsen.md) | The consistency that Git clients see under faults, and how the suite checks it |

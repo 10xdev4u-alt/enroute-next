@@ -108,7 +108,8 @@ was given. The path is what the URL carries, and a rename moves it.
 ### Control which refs the caller can discover
 
 Enroute asks `visible_refs` before every ref advertisement, with the refs it
-would otherwise send. Chapter 5 left this answering with everything.
+would otherwise send. The guide did not enable it, so until now every ref was
+visible.
 
 ```ts
 export async function visibleRefs(req: VisibleRefsRequest) {
@@ -130,6 +131,20 @@ export async function visibleRefs(req: VisibleRefsRequest) {
 caller may read and what it may be told is writable are two questions. A name
 you drop is hidden. A name you add that was not sent is ignored. `HEAD` is not
 in the list, and it is hidden automatically when what it points at is.
+
+Add it to `dispatch`:
+
+```ts
+if (req.visibleRefs) {
+  return HookResponse.fromPartial({ visibleRefs: await visibleRefs(req.visibleRefs) });
+}
+```
+
+Then enable it. Locally, start `enroute dev` again with
+`--enable authorize,visible_refs,pre_receive,post_receive`. A deployment adds
+`"visible_refs"` to `hooks.enabled`. Deploy the endpoint first: while the hook
+is enabled and unanswered, Enroute refuses every fetch and push of a
+repository that has refs.
 
 **The context is a snapshot.** Enroute captures it at `authorize` and replays
 it on the later calls, which on a large push is minutes later. In

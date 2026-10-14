@@ -70,7 +70,7 @@ every request for that name.
 - **To delete**, drop the row *first* and call `deleteRepository` second. The
   drop of the row is what makes the name unreachable, because `authorize` can
   no longer resolve it. A stop between them leaves storage to reclaim on a
-  retry, not a repository still serving git. `DeleteRepository` is idempotent,
+  retry, not a repository still serving Git. `DeleteRepository` is idempotent,
   so the retry is free.
 
 `listRepositories` finds the orphans. It walks every key Enroute holds, a
@@ -132,6 +132,11 @@ async function authorize(req: AuthorizeRequest): Promise<AuthorizeResponse> {
   // ... grant { repo: { key: row.id }, ... }, as in private-repositories.md
 }
 ```
+
+**Enroute can make the Enroute half.** With `git.create_on_push` on, which is
+the default, a push to a granted key that does not exist creates the
+repository. Then `authorize` only has to write the row. Keep the
+`createRepository` call to set a default branch before the first push.
 
 **Only on write.** A fetch of a name nothing holds must still be `NOT_FOUND`.
 A mistyped clone must say so, where a mistyped push at worst leaves an empty

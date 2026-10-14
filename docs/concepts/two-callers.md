@@ -22,6 +22,5 @@ The Git listener is normally public. Keep the API listener private: it
 authenticates nobody, so any client that can reach it can act as your
 application. See [Security](../operate/security.md).
 
-Enroute stores durable metadata in Postgres and Git objects and indexes in an
-object store. Its compute processes hold no repository state. See
-[Storage](storage.md).
+Enroute keeps refs in replicated logs on ledger nodes and Git data in an
+object store. See [Storage](storage.md).

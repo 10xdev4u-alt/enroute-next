@@ -30,7 +30,7 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
-        let (client, repo, work, local, servers) = pushed_repo_serving("first\n").await;
+        let (client, repo, work, local, stack) = pushed_repo_serving("first\n").await;
         // A second commit, so a test has a history to rewind rather than one
         // commit and nothing behind it.
         std::fs::write(local.join("a.txt"), "second\n").unwrap();
@@ -40,13 +40,13 @@ impl Fixture {
         let remote = tempfile::tempdir().unwrap();
         let (address, remote_servers) = spawn_git_remote(remote.path()).await;
         Self {
-            client,
+            client: client.holding(stack),
             repo,
             url: format!("http://{address}"),
             remote,
             local,
             _work: work,
-            _servers: servers.and(remote_servers),
+            _servers: remote_servers,
         }
     }
 

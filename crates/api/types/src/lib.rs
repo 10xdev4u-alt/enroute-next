@@ -47,7 +47,7 @@ pub mod common {
     }
 }
 
-/// `enroute.api.v1alpha1` — the four services an application drives Enroute with.
+/// `enroute.api.v1alpha1` — the five services an application drives Enroute with.
 pub mod api {
     /// The generated package.
     pub mod v1alpha1 {

@@ -1,6 +1,6 @@
-# Mirror to another git host
+# Mirror to another Git host
 
-Keeping a copy of every ref in step on GitHub or another git server, as they
+Keeping a copy of every ref in step on GitHub or another Git server, as they
 land.
 
 ## The problem
@@ -128,7 +128,7 @@ belongs to the application, and there is nothing here to rotate.
 **A push that timed out is safe to repeat.** A ref the remote already holds
 at the value asked for comes back `Status.UP_TO_DATE`, with nothing sent.
 
-**Enroute refuses a force, out of its own commit graph.** The git wire
+**Enroute refuses a force, out of its own commit graph.** The Git wire
 protocol carries no force bit, so the client is what refuses a push that
 would drop what the remote holds, and here the client is Enroute. Set
 `RefSpec.force` when you intend to overwrite what the remote holds. A mirror
@@ -137,9 +137,11 @@ must not have it.
 
 **`atomic` is all-or-nothing, where the remote offers it.** Enroute refuses
 the call rather than fall back to one ref at a time, because a caller that
-asked for all-or-nothing and got a partial push has no way to tell.
+asked for all-or-nothing and got a partial push has no way to tell. Enroute
+offers `atomic` too, so a mirror into another Enroute repository can set it.
 
-**A rejected ref is one ref.** The others in the same call still landed.
+**Without `atomic`, a rejected ref is one ref.** The others in the same call
+still landed.
 Record per destination, and let the next pass retry what failed. It will,
 because the record for that ref was not advanced.
 

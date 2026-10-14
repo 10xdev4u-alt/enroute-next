@@ -100,7 +100,7 @@ comparison instead of a state machine.
 ## What it does not do
 
 **It runs nothing and schedules nothing.** If no reporter posts, no check is
-"failed". It is absent, and absent blocks. That is the intended behaviour,
+"failed". It is absent, and absent blocks. That is the intended behavior,
 and it is why the required set belongs in the application's configuration and
 not anywhere a branch can reach.
 

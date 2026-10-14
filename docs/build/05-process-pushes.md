@@ -5,16 +5,22 @@ updates and one handles updates that succeeded.
 
 ## The two halves of a push
 
-Enroute stores the objects of a push before it asks anything, then calls
-`pre_receive` while no ref has moved yet. Whatever you allow, it applies, and
-then calls `post_receive` to say what landed.
+Enroute calls `pre_receive` while no ref has moved yet. It applies what you
+allow, then calls `post_receive` to say what landed. An allowed ref can still
+fail: another push can move it first, and a push made with `git push --atomic`
+lands no ref if any ref is refused.
 
 | Call | When | Can it refuse? |
 | --- | --- | --- |
-| `pre_receive` | Objects stored, no ref moved | Yes, per ref, with a message |
+| `pre_receive` | Push arrived, no ref moved | Yes, per ref, with a message |
 | `post_receive` | Refs moved | No |
 
 `pre_receive` applies ref-update policy. `post_receive` starts follow-up work.
+
+By default, your app cannot read the pushed objects during `pre_receive`.
+Decide from the actor, the refname, the object IDs, and `force`. To read the
+pushed commits first, set `hooks.pre_receive_mode = "objects"`. See [Read
+the pushed objects](../reference/hooks.md#read-the-pushed-objects).
 
 ## Judge every command
 
@@ -107,6 +113,26 @@ if (req.postReceive) {
   return HookResponse.fromPartial({ postReceive: await postReceive(req.postReceive) });
 }
 ```
+
+## Enable the two hooks
+
+Enroute calls a hook only when it is enabled. Stop `enroute dev`, and start it
+again with the two new hooks:
+
+```sh
+enroute dev --hooks http://localhost:3000/api/enroute/hooks \
+  --enable authorize,pre_receive,post_receive
+```
+
+A deployment adds them to its configuration file:
+
+```toml
+[hooks]
+enabled = ["authorize", "pre_receive", "post_receive"]
+```
+
+`visible_refs` stays off, so every ref is visible.
+[Private repositories](../patterns/private-repositories.md) enables it.
 
 ## What `post_receive` promises, and what it does not
 

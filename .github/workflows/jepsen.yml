@@ -1,0 +1,129 @@
+name: jepsen
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      time:
+        description: Seconds of workload in each run
+        default: "60"
+      faults:
+        description: Faults to run, separated by spaces (see dev/jepsen/run.sh)
+        default: "none partition-ledger partition-compute partition-lagging kill-ledger kill-leader pause-leader pause-compute kill-compute all"
+
+concurrency:
+  group: jepsen-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: cargo build --release --locked --bin enroute
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: enroute
+          path: target/release/enroute
+          if-no-files-found: error
+          retention-days: 3
+
+  jepsen:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        workload: [w1, w1-v0, w2, w3, w4]
+        topology: [split]
+        include:
+          - workload: w2
+            topology: both
+    env:
+      LEIN_ROOT: "1"
+      LEIN_VERSION: "2.12.0"
+      LAZYFS_COMMIT: fa7d32ee9710d55a7e529ac3c375f6616563c78b
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: enroute
+          path: ${{ runner.temp }}/bin
+
+      - run: chmod +x "${RUNNER_TEMP}/bin/enroute"
+
+      - name: Install Leiningen
+        run: |
+          mkdir -p "${HOME}/bin"
+          curl -fsSL -o "${HOME}/bin/lein" \
+            "https://raw.githubusercontent.com/technomancy/leiningen/${LEIN_VERSION}/bin/lein"
+          chmod +x "${HOME}/bin/lein"
+          echo "${HOME}/bin" >>"${GITHUB_PATH}"
+          echo "${JAVA_HOME_21_X64}/bin" >>"${GITHUB_PATH}"
+
+      - name: Fetch the Clojure dependencies
+        working-directory: dev/jepsen
+        run: lein deps
+
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends graphviz
+
+      - name: Build LazyFS
+        run: |
+          sudo apt-get install -y --no-install-recommends libfuse3-dev fuse3 cmake g++
+          git clone --quiet https://github.com/dsrhaslab/lazyfs.git "${RUNNER_TEMP}/lazyfs"
+          git -C "${RUNNER_TEMP}/lazyfs" checkout --quiet "${LAZYFS_COMMIT}"
+          (cd "${RUNNER_TEMP}/lazyfs/libs/libpcache" && ./build.sh)
+          (cd "${RUNNER_TEMP}/lazyfs/lazyfs" && ./build.sh)
+
+      - name: Make a user for each node
+        run: for i in 1 2 3 4 5; do sudo useradd -M -s /usr/sbin/nologin "n${i}"; done
+
+      - name: Run the suite
+        working-directory: dev/jepsen
+        env:
+          BIN: ${{ runner.temp }}/bin/enroute
+          LAZYFS: ${{ runner.temp }}/lazyfs/lazyfs/build/lazyfs
+          WORKLOADS: ${{ matrix.workload }}
+          TOPOLOGY: ${{ matrix.topology }}
+          TIME: ${{ inputs.time || '60' }}
+          FAULTS: ${{ inputs.faults || 'none partition-ledger partition-compute partition-lagging kill-ledger kill-leader pause-leader pause-compute kill-compute all' }}
+        run: sudo -E env "PATH=${PATH}" "HOME=${HOME}" ./run.sh
+
+      - name: Show memory and the kernel log
+        if: always()
+        run: |
+          free -m
+          sudo dmesg | tail -100 || true
+
+      - name: Write the summary
+        if: always()
+        working-directory: dev/jepsen
+        run: |
+          {
+            echo "### ${{ matrix.workload }} (${{ matrix.topology }})"
+            echo '```'
+            cat summary.txt 2>/dev/null || echo "No summary: the suite did not finish."
+            echo '```'
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Pack the store
+        if: failure()
+        working-directory: dev/jepsen
+        run: sudo tar czf "${RUNNER_TEMP}/jepsen-store.tgz" store summary.txt
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: jepsen-store-${{ matrix.workload }}-${{ matrix.topology }}
+          path: ${{ runner.temp }}/jepsen-store.tgz
+          retention-days: 14

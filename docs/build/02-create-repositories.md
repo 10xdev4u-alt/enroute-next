@@ -7,39 +7,26 @@ repository in both systems at once.
 At the end of this chapter, the application can create a repository. Git
 access is added in later chapters.
 
-## Use the Postgres you already have
+## Start a database for your app
 
-The quickstart stack runs Postgres for Enroute's own metadata. Your app needs
-a database too, and that container can hold both.
-
-Give your app a database of its own rather than tables inside Enroute's.
-Enroute owns its schema and migrates it on startup; your app owns yours. They
-share a server and nothing else, and the two never join.
-
-Expose the port, because your app runs on the host rather than inside the
-compose project. Add `ports` to the `postgres` service in `compose.yaml`:
-
-```yaml
-  postgres:
-    image: postgres:17-alpine
-    ports: ["5432:5432"]
-```
+Enroute has no database, so your app needs one of its own. This guide uses
+Postgres. Start it in a container, and keep it apart from the Enroute stack:
 
 ```sh
-docker compose up -d
-docker compose exec -T postgres createdb -U enroute codehost
+docker run -d --name codehost-db -p 5432:5432 \
+  -e POSTGRES_USER=codehost -e POSTGRES_PASSWORD=codehost \
+  -e POSTGRES_DB=codehost postgres:17-alpine
 ```
 
 Record the URL in `.env.local`, which Next.js loads automatically:
 
 ```sh
-DATABASE_URL=postgres://enroute:enroute@127.0.0.1:5432/codehost
+DATABASE_URL=postgres://codehost:codehost@127.0.0.1:5432/codehost
 ```
 
-> **Note:** This guide uses Postgres because it is already running. Nothing in
-> your app depends on it. This section uses ordinary Drizzle, so swapping the
-> driver for SQLite or libSQL changes the two files in this section and no other
-> line in the guide.
+> **Note:** Nothing in your app depends on Postgres. This section uses
+> ordinary Drizzle, so swapping the driver for SQLite or libSQL changes the two
+> files in this section and no other line in the guide.
 
 ## The schema
 
@@ -81,10 +68,10 @@ were `acme/widgets` and somebody renamed the project, every push would go to a
 different repository. `path` is a name, and names change; `id` is an identity,
 and it does not.
 
-A key is 1 to 256 bytes of ASCII letters, digits, `-`, `_`, and `.`, starting
-and ending with a letter or digit. It holds no `/`, so it is one path segment
-that needs no encoding. Your Git URLs can still nest to any depth: chapter 4 is
-where a URL becomes a key. See
+A key is at most 256 bytes. It holds one or more segments separated by `/`.
+Each segment holds ASCII letters, digits, `-`, `_`, and `.`, and starts and
+ends with a letter or digit. A row ID is one segment. Your Git URLs can nest to
+any depth: chapter 4 is where a URL becomes a key. See
 [Repository keys](../reference/the-contract.md#repository-keys).
 
 ## The connection
@@ -261,16 +248,14 @@ than duplicates, and it needs no record of what it did last time.
 The row and the repository both exist. Ask your database:
 
 ```sh
-docker compose exec -T postgres psql -U enroute -d codehost \
+docker exec codehost-db psql -U codehost -d codehost \
   -c 'select id, path from repos'
 ```
 
 Then ask Enroute for the same repository, by the ID that row carries:
 
 ```sh
-grpcurl -plaintext \
-  -d '{"repo": {"key": "repo-4f2a1c"}}' \
-  127.0.0.1:50051 enroute.api.v1alpha1.RefService/ListRefs
+enroute refs repo-4f2a1c
 ```
 
 An empty answer is success: the repository exists and holds no refs. An error
@@ -289,7 +274,7 @@ It answers with the path and the key it allocated.
 
 ## Result
 
-- A database your app owns, beside the one Enroute owns.
+- A database your app owns. Enroute needs none.
 - A `repos` table whose primary key is the key Enroute knows.
 - A create that reaches both systems, in the order that fails safely.
 

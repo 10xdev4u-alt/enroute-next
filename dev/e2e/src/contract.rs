@@ -12,16 +12,18 @@
 use anyhow::{Context as _, Result};
 use tonic::transport::Channel;
 
+use enroute_api::api::v1alpha1::commit_service_client::CommitServiceClient;
 use enroute_api::api::v1alpha1::object_service_client::ObjectServiceClient;
 use enroute_api::api::v1alpha1::ref_service_client::RefServiceClient;
 use enroute_api::api::v1alpha1::repository_service_client::RepositoryServiceClient;
 use enroute_api::api::v1alpha1::sync_service_client::SyncServiceClient;
 use enroute_api::api::v1alpha1::{
-    Commit, CreateRepositoryRequest, DeleteRepositoryRequest, DiffCommitRequest, FileChange,
-    FindMergeBasesRequest, FindMergeBasesResponse, GetObjectRequest, GetRepositoryRequest,
-    IsAncestorRequest, ListCommitsRequest, ListRefsRequest, ListRefsResponse,
-    ListRepositoriesRequest, ListTreeRequest, ObjectKind, PushToRemoteRequest, RefPushOutcome,
-    RefSpec, RefUpdate, Remote, Repository, TreeEntry, UpdateRefsRequest, get_object_response,
+    Commit, CreateCommitRequest, CreateCommitResponse, CreateRepositoryRequest,
+    DeleteRepositoryRequest, DiffCommitRequest, FileChange, FindMergeBasesRequest,
+    FindMergeBasesResponse, GetObjectRequest, GetRepositoryRequest, IsAncestorRequest,
+    ListCommitsRequest, ListRefsRequest, ListRefsResponse, ListRepositoriesRequest,
+    ListTreeRequest, ObjectKind, PushToRemoteRequest, RefPushOutcome, RefSpec, RefUpdate, Remote,
+    Repository, TreeEntry, UpdateRefsRequest, get_object_response,
 };
 use enroute_api::common::v1alpha1::{ObjectId, RepoKey};
 
@@ -60,9 +62,21 @@ pub(crate) struct Client {
     repositories: RepositoryServiceClient<Channel>,
     objects: ObjectServiceClient<Channel>,
     sync: SyncServiceClient<Channel>,
+    commits: CommitServiceClient<Channel>,
+    /// What must live as long as this client, such as the deployment it calls.
+    held: Option<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl Client {
+    /// Keep `held` alive for as long as this client is.
+    ///
+    /// A helper that starts a deployment and returns only a client must keep
+    /// the deployment up.
+    pub(crate) fn holding(mut self, held: impl std::any::Any + Send + Sync) -> Self {
+        self.held = Some(Box::new(held));
+        self
+    }
+
     /// Connect to Enroute at `endpoint`.
     ///
     /// # Errors
@@ -78,7 +92,9 @@ impl Client {
             refs: RefServiceClient::new(channel.clone()),
             repositories: RepositoryServiceClient::new(channel.clone()),
             objects: ObjectServiceClient::new(channel.clone()),
-            sync: SyncServiceClient::new(channel),
+            sync: SyncServiceClient::new(channel.clone()),
+            commits: CommitServiceClient::new(channel),
+            held: None,
         })
     }
 
@@ -212,6 +228,24 @@ impl Client {
             })
             .await?;
         Ok(())
+    }
+
+    /// Make a commit on the server from file changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the call fails, which is a commit that did not land.
+    pub(crate) async fn create_commit(
+        &self,
+        request: CreateCommitRequest,
+    ) -> Result<CreateCommitResponse> {
+        Ok(self
+            .commits
+            .clone()
+            .create_commit(request)
+            .await
+            .context("calling create_commit")?
+            .into_inner())
     }
 
     /// Every ref, whatever its prefix.

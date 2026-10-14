@@ -21,7 +21,7 @@ impl OracleDaemon {
         let daemon_base = tmp.join("daemon-base");
         let oracle_repo = daemon_base.join("repo.git");
         std::fs::create_dir_all(&oracle_repo).unwrap();
-        std::process::Command::new("git")
+        crate::support::isolated_git()
             .args(["init", "--quiet", "--bare", "-b", "main"])
             .arg(&oracle_repo)
             .status()
@@ -34,7 +34,7 @@ impl OracleDaemon {
             ("uploadpack.allowFilter", "true"),
             ("uploadpack.allowAnySHA1InWant", "true"),
         ] {
-            std::process::Command::new("git")
+            crate::support::isolated_git()
                 .args(["-C", oracle_repo.to_str().unwrap(), "config", key, value])
                 .status()
                 .unwrap();
@@ -47,7 +47,7 @@ impl OracleDaemon {
 
         let pid_file = tmp.join("daemon.pid");
 
-        let mut child = std::process::Command::new("git")
+        let mut child = crate::support::isolated_git()
             .args([
                 "daemon",
                 "--detach",
@@ -73,9 +73,8 @@ impl OracleDaemon {
         // socket before git daemon's protocol handler is ready. By success, the pid file exists.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let ready = std::process::Command::new("git")
+            let ready = crate::support::isolated_git()
                 .args(["ls-remote", &url])
-                .env("GIT_TERMINAL_PROMPT", "0")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status()

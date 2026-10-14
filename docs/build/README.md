@@ -30,9 +30,9 @@ Neither component implements the Git protocol.
 
 ## Before you start
 
-Complete the [Quickstart](../quickstart.md). It starts Enroute and Postgres
-locally. This guide assumes Git listens on `127.0.0.1:8080`, gRPC listens on
-`127.0.0.1:50051`, and you can edit `config/enroute.toml`.
+Complete the [Quickstart](../quickstart.md). It installs `enroute` and starts
+it locally with `enroute dev`. This guide assumes Git listens on
+`127.0.0.1:8080` and gRPC listens on `127.0.0.1:50051`.
 
 To follow the examples, install Node.js 20 or later, Git, and `protoc`.
 Generated field names can differ in other protobuf toolchains.
@@ -47,10 +47,10 @@ previous one.
 
 | # | Chapter | You will add |
 | --- | --- | --- |
-| 1 | [Set up Enroute and your application](01-set-up-enroute-and-your-app.md) | A local application and generated gRPC client |
+| 1 | [Set up Enroute and your app](01-set-up-enroute-and-your-app.md) | A local application and generated gRPC client |
 | 2 | [Create repositories](02-create-repositories.md) | Application tables and repository creation |
 | 3 | [Handle hooks](03-handle-hooks.md) | A verified hook endpoint |
-| 4 | [Authorize Git clients](04-authenticate-git-clients.md) | Token-based clone access |
+| 4 | [Authenticate Git clients](04-authenticate-git-clients.md) | Token-based clone access |
 | 5 | [Process pushes](05-process-pushes.md) | Push policy and post-push messages |
 
 ### Repository UI
@@ -63,11 +63,12 @@ previous one.
 ## Using the guide
 
 The code is a complete example application. It stores application data in its
-own Postgres database and uses Drizzle for database access. Enroute keeps its
-own schema in the same Postgres server; the two schemas do not share tables.
+own Postgres database and uses [Drizzle] for database access. Enroute needs no
+database, so [chapter 2](02-create-repositories.md) starts one for the
+application.
 
-Copy the example, then adapt it to your application. Use the [hook reference](../reference/hooks.md)
-for hook fields and the [API contract](../reference/the-contract.md) for RPC
+Copy the example, then adapt it to your application. Use the
+[hook reference](../reference/hooks.md) for hook fields and the [API contract](../reference/the-contract.md) for RPC
 behavior. The guide explains one implementation; those references define the
 rules every implementation must follow.
 

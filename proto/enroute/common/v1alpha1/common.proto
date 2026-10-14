@@ -12,13 +12,13 @@ package enroute.common.v1alpha1;
 // is no id of ours to store beside your own. Unique across the deployment,
 // and opaque to Enroute, which never reads anything out of one.
 message RepoKey {
-  // ASCII letters, digits, `-`, `_` and `.`, at most 256 bytes, starting and
-  // ending with a letter or digit. Compared byte for byte, so `Repo` and
-  // `repo` are two repositories.
+  // At most 256 bytes of segments joined by `/`, such as `acme/widgets`. A
+  // segment is ASCII letters, digits, `-`, `_` and `.`, and starts and ends
+  // with a letter or digit. Compared byte for byte, so `Repo` and `repo` are
+  // two repositories.
   //
-  // Use an id you allocated and will not change — a UUID, a ULID, a row id. A
-  // key is what a repository *is* here, so a name a rename moves, `owner/repo`
-  // above all, would come to name a different one.
+  // If your app renames or moves repositories, use an id that does not change,
+  // such as a UUID or a row id. A key is what a repository *is* here.
   string key = 1;
 }
 

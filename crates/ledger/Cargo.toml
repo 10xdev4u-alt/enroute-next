@@ -1,0 +1,52 @@
+[package]
+name = "enroute-ledger"
+description = "The ledger: the nodes that hold the replicated logs, decide each repository's incarnation and keep its state in the object store."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Waived until this crate's code meets these `cargo xtask lint` rules.
+[package.metadata.xtask]
+lint-debt = ["comments"]
+
+# The generated code that `build.rs` includes names it.
+[package.metadata.cargo-machete]
+ignored = ["tonic-prost"]
+
+[dependencies]
+enroute-shared.workspace = true
+anyhow.workspace = true
+lsm-tree.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+raft.workspace = true
+raft-engine.workspace = true
+raft-prost.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+slog.workspace = true
+tokio.workspace = true
+futures.workspace = true
+rand.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+tracing.workspace = true
+
+# On macOS raft-engine's own file layer syncs with plain `fsync`, which does
+# not flush the drive cache; `std_fs` uses std's (`F_FULLFSYNC`), as our
+# other durable writes do. Linux uses `fdatasync` either way. Here, beside the
+# log store, because workspace dependencies cannot be target-specific.
+[target.'cfg(target_os = "macos")'.dependencies]
+raft-engine = { workspace = true, features = ["std_fs"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+protox.workspace = true
+tonic-prost-build.workspace = true

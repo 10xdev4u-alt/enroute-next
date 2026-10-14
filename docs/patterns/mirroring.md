@@ -113,9 +113,11 @@ not have it.
 
 **`atomic` is all-or-nothing, where the remote offers it.** Enroute refuses
 the call rather than fall back to one ref at a time, because a caller that
-asked for all-or-nothing and got a partial push has no way to tell.
+asked for all-or-nothing and got a partial push has no way to tell. Enroute
+offers `atomic` too, so a mirror into another Enroute repository can set it.
 
-**A rejected ref is one ref.** The others in the same call still landed.
+**Without `atomic`, a rejected ref is one ref.** The others in the same call
+still landed.
 Record per destination, and let the next pass retry what failed. It will,
 because the record for that ref was not advanced.
 

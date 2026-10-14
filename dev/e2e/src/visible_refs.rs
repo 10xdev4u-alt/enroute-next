@@ -12,7 +12,7 @@ mod tests {
     /// The refs a clone is offered are the ones the application admitted to.
     #[tokio::test]
     async fn a_hidden_ref_is_not_advertised_to_a_clone() {
-        let (_tmp, local, _landed, _servers) = spawn_smoke_repo().await;
+        let (_tmp, local, _stack) = spawn_smoke_repo().await;
         let local = local.as_path();
 
         let hidden = crate::hooks::HIDDEN

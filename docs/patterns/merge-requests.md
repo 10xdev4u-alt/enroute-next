@@ -123,7 +123,8 @@ matches `base`, and drop the rest. Check `truncated` on the diff: a set that
 stopped at a server limit is only the first part of the answer.
 
 `FindMergeBases` answers with every base in `baseCommitIds`, because a
-criss-cross history has more than one. One is the ordinary answer.
+criss-cross history has more than one. One is the ordinary answer. The order
+is not defined, so with more than one, choose by your own rule.
 `exhausted` means the walk stopped before it had the answer, which is not the
 same as "no shared history" — draw no diff and say why.
 
@@ -167,5 +168,5 @@ fallen behind rebases it and pushes again.
   front of the ref move.
 - [Protected branches](protected-branches.md) — the rule that makes this the
   only way onto the trunk.
-- [The contract](../reference/the-contract.md#refs) — `UpdateRefs`, its
+- [The contract](../reference/the-contract.md#refs-and-objects) — `UpdateRefs`, its
   outcomes, and `IsAncestor`.

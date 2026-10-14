@@ -108,7 +108,7 @@ back on the later calls, which on a large push is minutes later. In
 ## What it does not do
 
 **It hides refs, not objects.** A client that knows the object id of a hidden
-tip can still fetch it, as under git's `uploadpack.hideRefs`. Anything whose
+tip can still fetch it, as under Git's `uploadpack.hideRefs`. Anything whose
 secrecy must survive a guessed object id belongs in a repository of its own.
 
 **It does not decide what a token is.** Enroute hands over the headers as they

@@ -4,9 +4,7 @@
 //! rests on: the key you gave is the key you get back, creating twice with one
 //! key is one repository, and a key released by a delete is free again.
 
-use crate::contract::Client;
 use crate::grpc::support::{contract_only, status_of};
-use crate::support::{make_isolated_state, spawn_enroute};
 
 /// The key comes back exactly as it was given.
 ///
@@ -22,6 +20,7 @@ async fn a_key_is_returned_as_it_was_given() {
         "01ARZ3NDEKTSV4RRFFQ69G5FAV",
         "1",
         "repo_1.2",
+        "acme/widgets",
     ] {
         let made = client.create_repository_as(key, "").await.unwrap();
         assert_eq!(made.repo.expect("a key").key, key);
@@ -37,9 +36,7 @@ async fn a_key_is_returned_as_it_was_given() {
 /// recorded the first answer, or never saw it, may simply ask again.
 #[tokio::test]
 async fn creating_twice_with_one_key_is_idempotent() {
-    let state = make_isolated_state().await;
-    let enroute = spawn_enroute(state.clone()).await;
-    let client = Client::connect(format!("http://{enroute}")).await.unwrap();
+    let client = contract_only().await;
 
     let first = client.create_repository_as("once", "").await.unwrap();
     let again = client.create_repository_as("once", "").await.unwrap();
@@ -49,7 +46,7 @@ async fn creating_twice_with_one_key_is_idempotent() {
     );
 
     // One repository, not two: the engine made nothing the second time.
-    let held = state.rows.all().await.unwrap();
+    let (held, _) = client.list_repositories(0, "").await.unwrap();
     assert_eq!(held.len(), 1, "a repeated create made a second repository");
 }
 
@@ -177,7 +174,7 @@ async fn a_page_token_belongs_to_the_prefix_that_minted_it() {
 async fn a_prefix_that_could_start_no_key_is_refused() {
     let client = contract_only().await;
 
-    for bad in ["acme/backend", "a b", "acme%2F"] {
+    for bad in ["a b", "acme%2F", "acme?"] {
         let error = client
             .list_repositories_under(bad, 50, "")
             .await
@@ -206,7 +203,8 @@ async fn a_key_the_rules_refuse_says_so() {
         "ünïcode",
         "-leading",
         "trailing.",
-        "acme/backend",
+        "acme//backend",
+        "acme/-x",
         "a?b",
         too_long.as_str(),
     ] {

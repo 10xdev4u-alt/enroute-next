@@ -1,0 +1,113 @@
+// What the compute needs from the ledger: the interface between the roles
+// (see enroute_shared::roles).
+
+syntax = "proto3";
+
+package enroute.internal.v1;
+
+import "state.proto";
+
+service Ledger {
+  // Make a repository's log live, waking it from the object store or
+  // creating it.
+  rpc Activate(ActivateRequest) returns (ActivateResponse);
+  // Order and apply a command in its repository's log; answered with the
+  // outcome once applied.
+  rpc Propose(Command) returns (Outcome);
+  // Wait until everything committed to a repository's log before the call
+  // has been applied; answered with the repository's version then, which a
+  // subscriber waits for its own state to reach.
+  rpc ReadBarrier(ReadBarrierRequest) returns (ReadBarrierResponse);
+  // Follow a live repository: its state, then every change to it, in
+  // order. The stream ends when this node stops hosting the incarnation
+  // (a newer one superseded it), or when the subscriber falls too far
+  // behind (it then follows again, from a new state).
+  rpc Follow(FollowRequest) returns (stream Update);
+  // Delete a repository: its tombstone is committed and its state object
+  // marked deleted before the answer, so a create may follow at once.
+  // Deleting a missing or deleted repository succeeds.
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  // A repository as of everything committed before the call.
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  // The repositories this node hosts, deleted ones included, in byte
+  // order of their names.
+  rpc List(ListRequest) returns (ListResponse);
+}
+
+message ActivateRequest {
+  string repo = 1;
+  // Create the repository if it does not exist.
+  bool create = 2;
+  // With `create`: HEAD of a repository this call creates, kept while its
+  // branch is unborn. Set, the call also reads the state object even if
+  // this node hosts the repository: a replica that missed a deletion must
+  // not make a create answer with the deleted repository.
+  optional string head = 3;
+}
+
+message ActivateResponse {
+  // False: the repository does not exist.
+  bool exists = 1;
+}
+
+message ReadBarrierRequest {
+  string repo = 1;
+}
+
+message ReadBarrierResponse {
+  uint64 version = 1;
+}
+
+message FollowRequest {
+  string repo = 1;
+}
+
+message Update {
+  oneof kind {
+    // The repository's state: replaces whatever the subscriber had.
+    RepoMeta state = 1;
+    // A change to it.
+    Change change = 2;
+  }
+}
+
+message DeleteRequest {
+  string repo = 1;
+}
+
+message DeleteResponse {}
+
+message DescribeRequest {
+  string repo = 1;
+}
+
+message DescribeResponse {
+  // Absent: the repository does not exist (or is deleted).
+  RepoSummary repo = 1;
+}
+
+message ListRequest {
+  // Only names with this prefix.
+  string prefix = 1;
+  // Only names after this one.
+  string after = 2;
+  uint32 limit = 3;
+}
+
+message ListResponse {
+  // In name order; deleted ones too (a node that has applied a deletion
+  // must outvote one that has not).
+  repeated RepoSummary repos = 1;
+  // More names follow the last one.
+  bool more = 2;
+}
+
+// A repository's identity and what describes it, without refs or layers.
+message RepoSummary {
+  string name = 1;
+  uint64 epoch = 2;
+  bool deleted = 3;
+  uint64 version = 4;
+  string head = 5;
+  uint64 last_push_ms = 6;
+}

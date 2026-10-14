@@ -104,7 +104,7 @@ export async function sweepOrphans() {
 ```
 
 A short page is not the last page. Stop only when `nextPageToken` comes back
-empty. See [The contract](../reference/the-contract.md#repositories).
+empty. See [The contract](../reference/the-contract.md#repository-keys).
 
 The same ordering settles a race between two creates of one path. Each caller
 allocates its own ID and makes its own repository. Let the unique constraint
@@ -145,6 +145,12 @@ if (!repo) {
 
 // ... grant { repo: { key: repo.id }, ... } as in chapter 4
 ```
+
+**Enroute can make the Enroute half.** With `git.create_on_push` on, which is
+the default, a push to a granted key that does not exist creates the
+repository. Then `authorize` only has to write the row. Keep the
+`CreateRepository` call if you want to set a default branch before the first
+push.
 
 **Only on write.** A fetch of a path nothing holds must still be
 `DENIAL_NOT_FOUND`. A mistyped clone must say so, where a mistyped push at

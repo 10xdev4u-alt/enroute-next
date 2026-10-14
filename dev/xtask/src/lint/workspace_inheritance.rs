@@ -5,8 +5,6 @@
 //! one absent from `[workspace.dependencies]` — the second closes the
 //! first's hole, where a new dep the root never learns of drifts crate by
 //! crate. `path` and `git` deps are exempt, naming a location, not a version.
-//! A crate that must differ says so in `[package.xtask] overrides`,
-//! which turns the exception into something a reader can grep for.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -42,22 +40,6 @@ pub(crate) fn check(manifests: &Manifests) -> Vec<Violation> {
     violations
 }
 
-/// The `[package]` fields this crate declares it will not inherit.
-///
-/// `[package.xtask] overrides = ["license"]` — cargo ignores it, and
-/// naming a field here is the review that letting one differ deserves.
-fn declared_overrides(package: Option<&toml::Table>) -> HashSet<&str> {
-    package
-        .and_then(|package| package.get("metadata"))
-        .and_then(Value::as_table)
-        .and_then(|metadata| metadata.get("xtask"))
-        .and_then(Value::as_table)
-        .and_then(|xtask| xtask.get("overrides"))
-        .and_then(Value::as_array)
-        .map(|fields| fields.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default()
-}
-
 fn check_member(
     file: &Path,
     member_manifest: &Value,
@@ -72,12 +54,11 @@ fn check_member(
     };
 
     let package = member_manifest.get("package").and_then(Value::as_table);
-    let overrides = declared_overrides(package);
     for field in workspace_package_fields {
         let Some(value) = package.and_then(|package| package.get(field.as_str())) else {
             continue;
         };
-        if inherits_workspace(value) || overrides.contains(field.as_str()) {
+        if inherits_workspace(value) {
             continue;
         }
         violations.push(violation(format!(

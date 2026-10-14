@@ -1,0 +1,234 @@
+// The contract between Enroute's roles: the replicated state machine (what
+// the log carries, what the ledger keeps, what subscribers follow) and the
+// records kept in the object store.
+
+syntax = "proto3";
+
+package enroute.internal.v1;
+
+// A git object id: 20 bytes (SHA-1). Encoded as message { bytes id = 1; },
+// decoded straight into enroute_shared::oid::Oid.
+message Oid {
+  bytes id = 1;
+}
+
+// One layer of a repository's manifest.
+message LayerMeta {
+  // The file's name, `<random>-<generation>` (see `layer_id`): random,
+  // given when the file is published, and never reused, so each
+  // object-store key is written by one upload and a layer that left the
+  // manifest cannot come back under its name. The generation is
+  // RepoMeta.upload_gen as the publisher saw it; a commit adding a stored
+  // layer whose generation is out of the window is rejected (see
+  // RepoMeta.upload_gen).
+  string id = 1;
+  uint32 objects = 2;
+  uint64 bytes = 3;
+  // An inline layer carries its file in the log itself (the LSM
+  // "memtable"): small writes skip the object store on the write path.
+  // Every other layer is in the object store before a command names it.
+  optional bytes data = 4;
+  // The layer's object ids: `first_id .. first_id + id_span`, oldest
+  // layers lowest. Assigned by the state machine to a pushed layer (whose
+  // span is its object count); a layer replacing others (a flush or
+  // compaction output) keeps the ids of the objects it took from them, so
+  // its range is within theirs, with holes where duplicates were dropped.
+  // The same on every node: views built against them do not depend on a
+  // layer's position.
+  uint32 first_id = 5;
+  uint32 id_span = 6;
+  // SHA-256 of the file from its index region to the end (32 bytes). The
+  // index region holds the SHA-256 of each chunk before it, so this value
+  // covers the whole file. Inline layers are checked against it.
+  bytes root = 7;
+  // The bytes from the object table to the end of the file: everything an
+  // open loads up front, so that it takes one ranged read.
+  uint64 meta_bytes = 8;
+}
+
+// A ref compare-and-swap.
+message RefUpdate {
+  string name = 1;
+  // The expected current value; absent: the ref must not exist.
+  Oid old = 2;
+  // The new value; absent: delete the ref.
+  Oid new = 3;
+}
+
+// A command in a repository's log.
+message Command {
+  string repo = 1;
+  // 3 was Hibernate (per-repository hibernation, removed).
+  reserved 3;
+  oneof kind {
+    Commit commit = 2;
+    AdvanceUploadGen advance_upload_gen = 4;
+    Delete delete = 5;
+  }
+  // The incarnation the proposer prepared the command against (0: any).
+  // A command for another one is refused: a push checked against a deleted
+  // repository must not land in the one created after it.
+  uint64 epoch = 6;
+}
+
+// Atomically publish layers and apply ref compare-and-swaps.
+message Commit {
+  // Without remove_layers: new layers, appended and given fresh ids (their
+  // first_id and id_span are ignored). With remove_layers: their
+  // replacements, whose id ranges must be ascending, disjoint, and within
+  // the removed layers' range.
+  repeated LayerMeta add_layers = 1;
+  // Layers replaced by add_layers (flush, compaction), in manifest order.
+  // All must be present and consecutive or the whole command is rejected.
+  // Added layers take their place.
+  repeated RemovedLayer remove_layers = 2;
+  repeated RefUpdate updates = 3;
+  // All-or-nothing ref updates.
+  bool atomic = 4;
+  // A git push's time (Unix milliseconds), stamped by the proposer so
+  // that applying stays deterministic: RepoMeta.last_push_ms if a ref
+  // moves. 0: not a push.
+  uint64 pushed_at_ms = 5;
+  // The proposer's time (Unix milliseconds): RepoMeta.ref_updated_ms of
+  // each ref the commit sets. 0: unknown.
+  uint64 updated_at_ms = 6;
+}
+
+// A layer a replacement removes.
+message RemovedLayer {
+  string id = 1;
+  // Where the ledger looks it up, instead of reading the whole manifest.
+  uint32 first_id = 2;
+}
+
+// Start the next upload generation (RepoMeta.upload_gen): what lets the
+// layer sweep delete files of older generations that nothing names.
+message AdvanceUploadGen {}
+
+// End the repository: a tombstone. Its refs and manifest are dropped, and
+// every later command in this incarnation is refused. A new repository of
+// the same name is a new incarnation.
+message Delete {}
+
+// The result of applying a command.
+message Outcome {
+  // The repository's version after applying (for read-your-writes).
+  uint64 repo_version = 2;
+  // Per ref update, in order.
+  repeated RefResult ref_results = 3;
+  // Whole-command rejection, to show.
+  optional string error = 4;
+  // Why, when `error` is set: what a proposer acts on.
+  Refusal refusal = 5;
+}
+
+// Why the ledger refused a whole command.
+enum Refusal {
+  // No refusal, or one this node does not know: read as INVALID.
+  REFUSAL_UNSPECIFIED = 0;
+  // The command does not fit the state (for example, layers to replace that
+  // are gone).
+  REFUSAL_INVALID = 1;
+  // The repository is deleted.
+  REFUSAL_DELETED = 2;
+  // The command was prepared against another incarnation (the repository
+  // was deleted, and maybe created again, since).
+  REFUSAL_OTHER_INCARNATION = 3;
+  // A stored layer was uploaded in an upload generation out of the window:
+  // publish it again under the current generation.
+  REFUSAL_STALE_UPLOAD = 4;
+}
+
+message RefResult {
+  // Absent: applied.
+  optional string error = 1;
+}
+
+// A repository's replicated state.
+message RepoMeta {
+  map<string, Oid> refs = 1;
+  string head = 2;
+  repeated LayerMeta layers = 3;
+  // Increases with every change, across incarnations: the log index of the
+  // change (index + 1), or one more than the previous version if that is
+  // larger (a new incarnation's log starts again from 1).
+  uint64 version = 4;
+  // 5 was `hibernated` (per-repository hibernation, removed).
+  reserved 5;
+  // The first object id not yet assigned to a layer.
+  uint64 next_id = 6;
+  // The current upload generation. Stored layers are added only if their
+  // generation (in their id) is at least upload_gen - UPLOAD_GEN_WINDOW,
+  // so once the log has applied upload_gen = G, a file of generation
+  // G - UPLOAD_GEN_WINDOW - 1 or older that the manifest does not name
+  // never will be: the layer sweep may delete it, whatever its clock or
+  // how far behind its view of the log.
+  uint64 upload_gen = 7;
+  // The incarnation (as in Record.epoch).
+  uint64 epoch = 8;
+  // Deleted (see Delete): the state is a tombstone.
+  bool deleted = 9;
+  // HEAD was set at creation: it names the default branch, and stays on it
+  // while the branch is unborn or after it is deleted, instead of pointing
+  // at another branch.
+  bool keep_head = 10;
+  // The time of the last git push that moved a ref (Unix milliseconds;
+  // 0: none).
+  uint64 last_push_ms = 11;
+  // When each ref was last set (Unix milliseconds, Commit.updated_at_ms).
+  // A ref set at an unknown time has no entry.
+  map<string, uint64> ref_updated_ms = 12;
+}
+
+// A change to a repository's state, made by applying a command: what a
+// subscriber applies to the state it follows.
+message Change {
+  // The repository's version after the change.
+  uint64 version = 1;
+  // Refs set or deleted, in order.
+  repeated RefChange refs = 2;
+  // HEAD, if it moved.
+  optional string head = 3;
+  // The manifest, if it changed.
+  LayerEdit layers = 4;
+  // 5 was `hibernated` (per-repository hibernation, removed).
+  reserved 5;
+  // RepoMeta.next_id, if it moved.
+  optional uint64 next_id = 6;
+  // RepoMeta.upload_gen, if it moved.
+  optional uint64 upload_gen = 7;
+  // The repository was deleted: drop every ref and layer.
+  bool deleted = 8;
+  // RepoMeta.last_push_ms, if it moved.
+  optional uint64 last_push_ms = 9;
+}
+
+message RefChange {
+  string name = 1;
+  // The new value; absent: deleted.
+  Oid value = 2;
+  // RepoMeta.ref_updated_ms of the ref (0: unknown).
+  uint64 updated_at_ms = 3;
+}
+
+// Remove the layers with these ids (consecutive), and insert `insert` in
+// their place, or at the end if none are removed.
+message LayerEdit {
+  repeated string remove = 1;
+  repeated LayerMeta insert = 3;
+}
+
+// A repository's state at a log index of an incarnation: in the object
+// store (repos/<repo>/state and repos/<repo>/epochs/<E>), and in its log's
+// snapshots (so a recovering node knows which log is which).
+message Record {
+  string repo = 1;
+  uint64 epoch = 2;
+  uint64 index = 3;
+  // Its log's voters (store ids) as of `index`: in an incarnation's
+  // initial state, those it started with.
+  repeated uint64 voters = 4;
+  RepoMeta meta = 5;
+  // Its log's learners as of `index` (nodes catching up to become voters).
+  repeated uint64 learners = 6;
+}

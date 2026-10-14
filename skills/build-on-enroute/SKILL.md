@@ -1,11 +1,11 @@
 ---
 name: build-on-enroute
-description: "Start a local Enroute git-hosting stack with docker compose, then build a minimal integration against it in the language and framework the user chose: a gRPC client of the contract, and the one HTTP route Enroute calls back on. Holds recipes for the patterns built on top: protected branches, merge requests, a merge queue, checks and CI, private repositories, and mirroring to another git host. Use this skill when someone wants to try Enroute, develop against it locally, connect an application to the git API and hooks of Enroute, or build one of those patterns on it."
+description: "Start a local Enroute git-hosting node with `enroute dev`, installed or from the Docker image, then build a minimal integration against it in the language and framework the user chose: a gRPC client of the contract, and the one HTTP route Enroute calls back on. Holds recipes for the patterns built on top: protected branches, merge requests, a merge queue, checks and CI, private repositories, and mirroring to another Git host. Use this skill when someone wants to try Enroute, develop against it locally, connect an application to the Git API and hooks of Enroute, or build one of those patterns on it."
 ---
 
 # Build on Enroute
 
-Enroute hosts git. It terminates the git connection, stores the objects, and
+Enroute hosts Git. It terminates the Git connection, stores the objects, and
 knows a repository only by the key the application gave it. It does not know
 what a repository is called, who owns it, or who may read it. The application
 you are about to build answers those questions.
@@ -15,18 +15,30 @@ against it, in the stack the user chose.
 
 ## What the user ends up with
 
-Two pieces of their own code. Neither one speaks git.
+Two pieces of their own code. Neither one speaks Git.
 
 | Piece    | Direction      | What it is                                                               |
 | -------- | -------------- | ------------------------------------------------------------------------ |
 | Client   | user → Enroute | A generated gRPC client. Creates repositories, reads objects, moves refs. |
 | Endpoint | Enroute → user | One HTTP POST route. Verifies a signature, then answers four calls.       |
 
-They also get a local stack: Postgres and Enroute, from the published image
-`ghcr.io/enroute-sh/enroute`.
+They also get a local Enroute: `enroute dev`, from the `enroute` command when
+it is installed, or else from the published image.
 
-Everything this needs ships with the skill: the contract, the local stack, the
-references, and the recipes. Build from these files only. Do not read an
+Two facts shape the whole build:
+
+- **Every hook is opt-in.** Enroute calls only the hooks that are enabled,
+  in `hooks.enabled` or with `enroute dev --hooks`. A hook that is not
+  enabled takes its default: `authorize` allows read and write and uses the
+  URL path without `.git` as the key, `visible_refs` shows every ref,
+  `pre_receive` allows every command, and `post_receive` is not called. This
+  skill enables all four.
+- **A key may contain `/`**, as in `acme/widgets`. Each segment is ASCII
+  letters, digits, `-`, `_`, and `.`. Still key by an id that never changes,
+  because a rename must not move a repository.
+
+Everything this needs ships with the skill: the contract, the references, and
+the recipes. Build from these files only. Do not read an
 Enroute checkout, a published SDK, or another integration on the machine. Each
 of those is a different version of a different thing, and the build must match
 the contract the running stack serves.
@@ -54,8 +66,9 @@ Ask the user, in one message:
 Do not ask about storage, tenancy, authentication, or deployment. The loop
 works without them, and the user can decide them later.
 
-Then **choose the URL of the endpoint yourself.** The host is
-`host.docker.internal`, so a container can reach the host. The port is the
+Then **choose the URL of the endpoint yourself.** Under `enroute dev`, the host
+is `localhost`. Under the image, the host is `host.docker.internal`, so the
+container can reach the host. The port is the
 development server of the framework: `3000` for Next.js, `8000` for FastAPI or
 Django, `4000` for Phoenix.
 
@@ -73,41 +86,52 @@ down, and serve the route there in phase 4.
 Then check the tools:
 
 ```sh
-docker version
 git --version
+enroute --version    # if this fails, use the image
+docker version       # needed only for the image
 ```
 
-Both are required. Everything else depends on the language.
+Git is required, and one of `enroute` or Docker. Everything else depends on
+the language.
 
 ## Phase 2: start the stack
 
-Read `references/local-stack.md` and follow it. The stack runs the published
-image, so nothing is cloned and nothing compiles. It starts in about a minute.
+Read `references/local-stack.md` and follow it.
 
-Copy the `stack/` directory beside this file to where the user wants it, put
-the endpoint URL into the configuration, and start it:
+If `enroute` is installed, run `enroute dev` in the user's project directory,
+with the endpoint URL. It enables all four hooks and generates a signing key
+in `.enroute/dev`:
 
 ```sh
-cp -R <this skill>/stack enroute-stack
-cd enroute-stack
-$EDITOR config/enroute.toml    # hooks.endpoint_url is the user's
-docker compose up -d
+enroute dev --hooks http://localhost:3000/api/enroute/hooks
 ```
 
-Copy it rather than start it in place. `docker compose` names the project after
-the directory, the volumes belong to that project, and the next upgrade
-replaces the skill directory.
+Otherwise, run `enroute dev` from the published image, so nothing is cloned
+and nothing compiles. Give it the endpoint URL:
+
+```sh
+docker run --rm -d --name enroute \
+  -p 8080:8080 -p 50051:50051 -v enroute-dev:/data \
+  --add-host=host.docker.internal:host-gateway \
+  ghcr.io/enroute-sh/enroute:0.3.0 dev --dir /data --host 0.0.0.0 \
+  --hooks http://host.docker.internal:3000/api/enroute/hooks
+```
+
+The `enroute-dev` volume keeps the data and the signing key. The endpoint gets
+the public key from the banner (`docker logs enroute`) or with
+`docker cp enroute:/data/hooks-signing-key.pub.pem .`.
 
 Git does not serve until the endpoint answers, which is phase 4. Nothing stands
-in for it. Tell the user this now, rather than let a failed clone tell them.
+in for an enabled hook. Tell the user this now, rather than let a failed clone
+tell them.
 
 These values are fixed. None of them is a secret:
 
-| Thing           | Value                                                    |
-| --------------- | -------------------------------------------------------- |
-| Git             | `http://127.0.0.1:8080`                                  |
-| Contract (gRPC) | `127.0.0.1:50051`, plaintext HTTP/2                      |
-| Signing key     | RFC 9421's `test-key-ed25519`, in `config/enroute.toml`  |
+| Thing           | Value                                                                       |
+| --------------- | --------------------------------------------------------------------------- |
+| Git             | `http://127.0.0.1:8080`                                                     |
+| Contract (gRPC) | `127.0.0.1:50051`, plaintext HTTP/2                                         |
+| Signing key     | `.enroute/dev/hooks-signing-key.pub.pem`, or `/data/hooks-signing-key.pub.pem` in the container |
 
 The contract authenticates nobody, and needs no header. This stack puts nothing
 in front of the listener, so anything that can reach 50051 can read, write and
@@ -117,8 +141,7 @@ That is correct on a laptop and wrong in a deployment, where the port must be
 reachable only by the user's application. Tell the user this, so they do not
 ship the local shape.
 
-**Checkpoint.** The containers are up, and `docker compose logs enroute` shows
-a start line with a `keyid`. Do not continue until it does.
+**Checkpoint.** The `enroute dev` banner, or `docker logs enroute`, shows the four hooks and a `keyid`. Do not continue until it does.
 `references/troubleshooting.md` covers the failures.
 
 ## Phase 3: write the client
@@ -134,9 +157,9 @@ mkdir -p <the user's project>/proto
 cp -R <this skill>/proto/enroute <the user's project>/proto/
 ```
 
-**Copy all six files, `hook/v1alpha1/hook.proto` among them, and generate all
-six.** That file declares no service, so a codegen command written around the
-four services skips it without a message. Phase 4 cannot be written without
+**Copy all seven files, `hook/v1alpha1/hook.proto` among them, and generate all
+seven.** That file declares no service, so a codegen command written around the
+five services skips it without a message. Phase 4 cannot be written without
 the types in it.
 
 Copy rather than generate from the skill in place. The next upgrade replaces
@@ -161,7 +184,7 @@ Stop here if the key does not come back. That key proves the contract and the
 database both work. After it, every failure is in the user's
 code, not the stack.
 
-No endpoint answers yet, so git has nothing to ask and a clone fails. The git
+No endpoint answers yet, so Git has nothing to ask and a clone fails. The Git
 loop is phase 5.
 
 ## Phase 4: write the endpoint
@@ -180,9 +203,9 @@ handle each one on purpose:
 - **Verify against the URL Enroute is configured with**, not the arriving
   `Host` header and path. A proxy rewrites those.
 - **Answer the call that was asked.** An empty answer makes Enroute refuse the
-  git request. That is deliberate: it means "not implemented", not "allow".
+  Git request. That is deliberate: it means "not implemented", not "allow".
 - **Deny with `200`.** A refusal is a field in the answer. A non-200 is a
-  fault, and Enroute fails the git request closed.
+  fault, and Enroute fails the Git request closed.
 
 There is no table from a name to an id of Enroute's. The key the application
 chose at `CreateRepository` is what every call names. Key by the primary key of
@@ -199,28 +222,29 @@ passes every test in phase 5 and is useless in production.
 The stack already names the user's endpoint, from phase 2. Start the endpoint
 and go to the checkpoint.
 
-If the endpoint ended up on a different URL, edit `hooks.endpoint_url` in
-`config/enroute.toml` in the copied stack, then `docker compose restart
-enroute`. Configuration is read once, at startup.
+If the endpoint ended up on a different URL, stop `enroute dev` and start it
+again with the new `--hooks` URL. For the image, run `docker stop enroute`,
+then the same `docker run` with the new URL. The volume keeps the data and
+the key. Configuration is read once, at startup.
 
 Enroute signs over that exact authority and path. If it differs by one byte
 from what the endpoint verifies against, every call is a `401` with no reason
 given.
 
-On Linux, `host.docker.internal` does not resolve unless the compose file says
-so. See `references/troubleshooting.md`.
+With the image on Linux, `host.docker.internal` does not resolve without
+`--add-host`. See `references/troubleshooting.md`.
 
 **Checkpoint.** Run the whole loop against the user's endpoint:
 
 1. Create a repository over the contract, and name it in the user's table.
 2. `git clone` it by that name, with a credential the endpoint accepts. This
-   is the first git traffic, so it is the first proof that `authorize` works.
+   is the first Git traffic, so it is the first proof that `authorize` works.
 3. Commit and push. It lands.
 4. Make the endpoint refuse one refname from `pre_receive`. Push it, and watch
-   git print the reason.
+   Git print the reason.
 5. Make the endpoint drop one refname from `visible_refs`. Fetch, and watch
    the ref not be advertised.
-6. Make `post_receive` answer with a message. Push, and watch git print it.
+6. Make `post_receive` answer with a message. Push, and watch Git print it.
 
 Steps 4 to 6 tell a working endpoint apart from one that returns `200` and
 decides nothing. Run all three.
@@ -252,7 +276,7 @@ Read these.
 
 | File                            | Read it for                                                                    |
 | ------------------------------- | ------------------------------------------------------------------------------ |
-| `references/local-stack.md`     | Starting the stack, what each service is, resetting it.                        |
+| `references/local-stack.md`     | `enroute dev`, installed or from the image, hook defaults, resetting it.       |
 | `references/contract.md`        | Codegen per language, the RPCs, the rules.                                     |
 | `references/endpoint.md`        | The four calls, and reading a raw body per framework.                          |
 | `references/signature.md`       | RFC 9421 verification, with a test vector.                                     |
@@ -261,12 +285,11 @@ Read these.
 
 ## What ships with this skill
 
-Copy these out. The next upgrade replaces both, so a project that reads them in
+Copy this out. The next upgrade replaces it, so a project that reads it in
 place moves when the skill does.
 
-| Directory        | What it is                                                             | Copy it to                          |
-| ---------------- | ---------------------------------------------------------------------- | ----------------------------------- |
-| `proto/enroute/` | The contract. Six files, `hook/v1alpha1/hook.proto` among them.        | The user's project, in phase 3.     |
-| `stack/`         | The local stack: a compose file and the two config files it mounts.    | A directory of its own, in phase 2. |
+| Directory        | What it is                                                        | Copy it to                      |
+| ---------------- | ----------------------------------------------------------------- | ------------------------------- |
+| `proto/enroute/` | The contract. Seven files, `hook/v1alpha1/hook.proto` among them. | The user's project, in phase 3. |
 
 [the docs]: https://github.com/enroute-sh/enroute/blob/HEAD/docs/README.md

@@ -9,19 +9,23 @@ import "google/protobuf/timestamp.proto";
 // terminates the connection itself: a caller reads where the branches point
 // and moves them, and never handles a packfile.
 //
-// Introducing objects is git's job, over git. A ref here may only be pointed
-// at a commit this repository already stores, and a tip that is not one is
-// refused — so there is no pack to send and nothing to negotiate.
+// Introducing objects is the job of git, over git, or of
+// `CommitService.CreateCommit`. A ref here may only be pointed at an object
+// this repository already stores, and a branch can only be pointed at a
+// commit — so there is no pack to send and nothing to negotiate.
 service RefService {
-  // The repository's refs, and where `HEAD` points.
+  // The repository's refs, and the branch `HEAD` points at. `HEAD` is not
+  // one of the refs.
   rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
 
-  // Move refs onto commits the repository already stores, atomically.
+  // Move refs onto objects the repository already stores. Each update lands
+  // or is refused on its own: the call is not all-or-nothing.
   //
   // No `pre-receive`: that hook is how an application decides what a *git
   // client* may land, and the caller here is the application. What it cannot
-  // waive still holds — every tip must already be a commit this repository
-  // stores, so git remains the only way an object arrives.
+  // waive still holds — every tip must already be an object this repository
+  // stores, and a branch (`refs/heads/*`) must point at a commit, so no
+  // object arrives this way.
   rpc UpdateRefs(UpdateRefsRequest) returns (UpdateRefsResponse);
 
   // Does `descendant_commit_id` have `ancestor_commit_id` in its history?
@@ -44,8 +48,8 @@ message Ref {
   // Fully qualified, e.g. `refs/heads/main`.
   string name = 1;
   common.v1alpha1.ObjectId object_id = 2;
-  // When this ref last moved. Unset for `HEAD`, which points at another ref
-  // rather than moving on its own, and so has no time of its own to report.
+  // When this ref last moved, by the clock of the node that proposed the
+  // change. Unset for a ref stored without a time.
   google.protobuf.Timestamp updated_at = 3;
 }
 
@@ -57,8 +61,8 @@ message ListRefsRequest {
 
 message ListRefsResponse {
   repeated Ref refs = 1;
-  // Where `HEAD` points, for a client that advertises a symref. Empty if the
-  // repository has no commits yet.
+  // Where `HEAD` points, for a client that advertises a symref. It is
+  // reported here and not as an entry in `refs`.
   string default_branch = 2;
 }
 
@@ -66,7 +70,9 @@ message ListRefsResponse {
 //
 // An unset `old_object_id` asks for a create, and is refused with
 // REASON_ALREADY_EXISTS if the ref is already there — it does not waive the
-// check, it changes what is checked. An unset `new_object_id` deletes.
+// check, it changes what is checked. An unset `new_object_id` deletes, and
+// there an unset `old_object_id` waives the check: the ref goes whatever it
+// holds.
 message RefUpdate {
   string refname = 1;
   common.v1alpha1.ObjectId old_object_id = 2;
@@ -75,7 +81,7 @@ message RefUpdate {
 
 message UpdateRefsRequest {
   common.v1alpha1.RepoKey repo = 1;
-  // Applied atomically together. Outcomes come back in this order.
+  // Each applied on its own. Outcomes come back in this order.
   repeated RefUpdate updates = 2;
 }
 
@@ -112,12 +118,14 @@ message RefUpdateOutcome {
 
     enum Reason {
       REASON_UNSPECIFIED = 0;
-      // The new tip is not a commit this repository stores. Push it over
-      // git first.
+      // The new tip is not stored in this repository, or a branch's new tip
+      // is not a commit. Push it over git, or make it with `CreateCommit`,
+      // first.
       REASON_MISSING_OBJECTS = 1;
       // The refname fails git's own funny-refname check.
       REASON_FUNNY_REFNAME = 2;
-      // A branch was pointed at an object known not to be a commit.
+      // Not returned: a branch pointed at a non-commit gets
+      // REASON_MISSING_OBJECTS.
       REASON_NON_COMMIT_OBJECT = 3;
       // A policy hook denied it. See `message`.
       REASON_POLICY = 4;

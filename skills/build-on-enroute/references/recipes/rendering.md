@@ -7,7 +7,7 @@ Turning what the contract answers into a diff and a file tree on a page.
 `diffCommit` answers *which paths changed, and the blob on each side*.
 `listTree` answers *a flat list of paths*. Neither carries a byte of text, and
 at first reading both look like half an answer, as though something between
-them and the page still has to parse git objects and run a diff algorithm.
+them and the page still has to parse Git objects and run a diff algorithm.
 
 Nothing does. The contract is shaped for the two libraries that draw this,
 and the join is close to free. What is left is a handful of small decisions,
@@ -33,7 +33,7 @@ React is the shape, and that holds in any language.
 | Package | Takes | Draws |
 | --- | --- | --- |
 | [`@pierre/diffs`](https://www.npmjs.com/package/@pierre/diffs) | two file contents | the hunks between them, highlighted |
-| [`@pierre/trees`](https://www.npmjs.com/package/@pierre/trees) | a list of paths | a file tree, with per-row git status |
+| [`@pierre/trees`](https://www.npmjs.com/package/@pierre/trees) | a list of paths | a file tree, with per-row Git status |
 
 This recipe is written against `@pierre/diffs` 1.3.6 and `@pierre/trees`
 1.0.0-beta.6. What is below is the whole of what the join needs. Each package
@@ -63,7 +63,7 @@ const item = {
 ```
 
 Which id is unset is the whole of the status of the file, and it is the same
-word the tree colours its row with, so the two cannot disagree.
+word the tree colors its row with, so the two cannot disagree.
 
 **A missing side is `null`, never an empty string.** That is how the parser
 is told the file was added or deleted.
@@ -72,7 +72,7 @@ is told the file was added or deleted.
 extension is how the language for highlighting is chosen.
 
 **Pass the object id of the blob as `cacheKey`.** `FileContents` takes one,
-and it wants an identifier that is unique and stable. A git object id is
+and it wants an identifier that is unique and stable. A Git object id is
 exactly that. The contract hands one over, so there is no key to invent and
 none that can go stale against its content.
 
@@ -192,7 +192,7 @@ instead of starting one per caller, so a reader that navigates away costs the
 next one nothing. Delete the key on failure, or the error becomes the cached
 answer for good.
 
-**A NUL byte is the binary test.** It is what git uses, and it is a better
+**A NUL byte is the binary test.** It is what Git uses, and it is a better
 test than a failed decode. UTF-8 accepts plenty of byte sequences nobody wants
 rendered.
 
@@ -218,7 +218,7 @@ stopped early costs less than one read to the end and thrown away.
 **Share one theme.** Both libraries speak the same theme format. The bundled
 pair is `pierre-light` and `pierre-dark`. Page CSS cannot reach into a tree
 drawn in a shadow root. Resolve the theme once and convert it for the tree,
-instead of matching colours by hand.
+instead of matching colors by hand.
 
 ## What it does not do
 

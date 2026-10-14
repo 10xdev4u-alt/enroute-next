@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("enroute/api/v1alpha1/ref.proto"),
         proto_root.join("enroute/api/v1alpha1/object.proto"),
         proto_root.join("enroute/api/v1alpha1/sync.proto"),
+        proto_root.join("enroute/api/v1alpha1/commit.proto"),
         proto_root.join("enroute/hook/v1alpha1/hook.proto"),
     ];
 

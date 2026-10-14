@@ -1,9 +1,9 @@
 # Recipes
 
-`SKILL.md` makes git work. These are the patterns built on top of it. Each one
+`SKILL.md` makes Git work. These are the patterns built on top of it. Each one
 is a file of its own. Read the rules below, then open the recipe the user
 asked for, and whatever its closing links say it rests on. None of them is
-needed to serve git.
+needed to serve Git.
 
 Every recipe opens with `## The problem`, which gives the problem it solves
 and what the obvious answer costs, then the code under `## The solution`. A
@@ -44,24 +44,32 @@ digit. The create is idempotent on the key, so a retry is safe.
 
 **An actor string.** `Granted.actor` is who is asking, in the application's
 namespace. Enroute hands every later hook call that answer and never what the
-git client said. Put an id there, never a credential and never an email
+Git client said. Put an id there, never a credential and never an email
 address.
 
 **The application holds the policy.** Enroute refuses a push whose objects are
-missing, a push whose refname git would not accept, and a push whose
+missing, a push whose refname Git would not accept, and a push whose
 `old_object_id` no longer matches what the ref holds. It refuses nothing else.
 A force-push, a deleted trunk, or a branch nobody reviewed each lands unless
 `preReceive` refuses it.
 
-**A refusal is per ref.** `preReceive` judges every command it is sent, one at
-a time. Enroute offers a git client no `atomic` capability, so one refused ref in
-a push of three does not hold back the other two. A command it judges neither
-way is the exception: nothing is guessed for it, and the whole push fails.
+**A refusal is per ref, unless the push is atomic.** `preReceive` judges every
+command it is sent, one at a time, so one refused ref in a push of three does
+not hold back the other two. A command it judges neither way is the exception:
+nothing is guessed for it, and the whole push fails. A push made with
+`git push --atomic` is the other exception: one refusal fails all of it, and
+no ref lands.
+
+**`preReceive` sees commands, not objects.** By default, the pushed commits
+are not readable through the contract during the call, and `force` is the
+ancestry answer. A recipe that reads the pushed commits, files, or diffs in
+`preReceive` must set `pre_receive_mode = "objects"` under `[hooks]`, and
+costs a second log entry per push. No recipe here needs it.
 
 **An id is a message, and an absent one is unset.** `ObjectId { hex }`
 wherever an id appears, so a client cannot pass a refname where an id belongs.
 Absence has one spelling in both directions: no `old_object_id` is a create,
-no `new_object_id` is a delete. Neither git's forty zeroes nor an empty string
+no `new_object_id` is a delete. Neither Git's forty zeroes nor an empty string
 means anything here.
 
 **A rule lives outside what it gates.** A policy a pusher can change by

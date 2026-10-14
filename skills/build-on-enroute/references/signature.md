@@ -91,16 +91,11 @@ integration.
 
 ## The public key
 
-Get it from whoever operates Enroute. For the local stack it is the published
-test key of RFC 9421:
-
-```
------BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAJrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs=
------END PUBLIC KEY-----
-```
-
-Its `keyid` is `poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U`.
+Get it from whoever operates Enroute. Under `enroute dev`, read it from
+`.enroute/dev/hooks-signing-key.pub.pem`. Under the image, the key is in the
+container at `/data/hooks-signing-key.pub.pem`. Copy it out with
+`docker cp enroute:/data/hooks-signing-key.pub.pem .`, or read it from the
+banner in `docker logs enroute`. The banner also prints its `keyid`.
 
 `keyid` is the [RFC 7638](https://www.rfc-editor.org/rfc/rfc7638.html) JWK
 thumbprint of the key: the base64url, unpadded, SHA-256 of
@@ -166,12 +161,21 @@ code generated it.
 
 | Part      | Value                                |
 | --------- | ------------------------------------ |
-| Key       | RFC 9421's `test-key-ed25519`, above |
+| Key       | RFC 9421's `test-key-ed25519`, below |
 | Method    | `POST`                               |
 | Authority | `forge.example.com`                  |
 | Path      | `/enroute/hooks`                     |
 | Body      | The five ASCII bytes `hello`         |
 | `created` | `1700000000`                         |
+
+The public half of the test key. Its `keyid` is
+`poqkLGiymh_W0uP6PZFw-dvez3QJT5SolqXBCW38r0U`.
+
+```
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAJrQLj5P/89iXES9+vFgrIy29clF9CC/oPPsw3c5D0bs=
+-----END PUBLIC KEY-----
+```
 
 The base is the one shown above, and the headers are:
 
@@ -190,4 +194,4 @@ Test three things, not one:
 The skew check needs the clock, so pass the current time into the verifier
 instead of reading it inside. That is what makes the vector testable.
 
-[`crates/api/signature`]: https://github.com/enroute-sh/enroute/tree/release/crates/api/signature
+[`crates/api/signature`]: https://github.com/enroute-sh/enroute/tree/HEAD/crates/api/signature

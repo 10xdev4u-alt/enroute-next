@@ -13,4 +13,4 @@ an endpoint.
 | [Data model](model.md) | Repository keys, refs, and objects |
 | [Clients and interfaces](two-callers.md) | Git, gRPC, hooks, and network boundaries |
 | [Hooks](hooks.md) | Application policy decisions and hook limits |
-| [Storage](storage.md) | Object storage, Postgres, indexes, and ingestion |
+| [Storage](storage.md) | Ledger and compute nodes, layers, and durability |

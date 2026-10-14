@@ -8,7 +8,7 @@ people who can otherwise push.
 A trunk is the branch everything else is measured against, so it is the one
 branch nobody may rewrite under everybody else. Enroute will not
 stop them. It refuses a push whose objects never arrived, a push whose refname
-git would not accept, and a push whose `oldObjectId` no longer matches what
+Git would not accept, and a push whose `oldObjectId` no longer matches what
 the ref holds. It refuses nothing else. A force-push over the trunk, a deleted
 trunk, or a branch nobody reviewed each lands unless the application says
 otherwise. Enroute holds no opinion about which refs may be rewritten.
@@ -62,12 +62,12 @@ async function judge(req: PreReceiveRequest, c: RefCommand) {
 both ids, so a delete arrives with `force` false and no `newObjectId`. Test the
 delete first, or whoever cannot rewrite a protected branch can still remove it.
 
-**`force` means what git means.** It is true when `oldObjectId` is not an
+**`force` means what Git means.** It is true when `oldObjectId` is not an
 ancestor of `newObjectId`, which is a rewrite. A ref that moves forward over a
 stale value is a different thing, and Enroute refuses that before it asks the
 hook.
 
-**`reason` reaches the person.** Their git client prints it, the way it prints
+**`reason` reaches the person.** Their Git client prints it, the way it prints
 the stderr of a hook. Name the ref and say what to do instead. That text is
 all they get.
 
@@ -78,9 +78,10 @@ so a branch no rule covers is allowed out loud rather than by omission. Write
 it as one loop with a `continue`, and a table that grows a row it does not
 cover becomes a table that protects nothing.
 
-**A refusal is per ref.** Enroute offers a git client no `atomic` capability,
-so [one refused ref in a push of three does not hold back the other
-two](../recipes.md). Say which ref you refused and why, in each refusal.
+**A refusal is per ref, unless the push is atomic.** [One refused ref in a
+push of three does not hold back the other two](../recipes.md). If the person
+pushes with `git push --atomic`, one refusal fails the whole push and no ref
+lands. Say which ref you refused and why, in each refusal.
 
 **Let the first push create it.** An unset `oldObjectId` is a create, and
 somebody has to be able to create a protected branch that does not exist yet.
@@ -93,7 +94,7 @@ an identity that keeps working.
 refuses *every* push to the trunk, from everybody, and it needs no exception:
 a merge goes over the contract, which runs no `pre-receive`. A hook that
 admits one privileged actor instead is two rules that have to agree, and the
-trunk is then only as safe as the guarantee that no git client can claim that
+trunk is then only as safe as the guarantee that no Git client can claim that
 name. [A rule you must exempt yourself from is at the wrong
 door](../recipes.md).
 

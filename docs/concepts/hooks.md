@@ -11,7 +11,31 @@ endpoint and waits for the response.
 | `pre_receive` | After object upload and before ref updates | Accept or reject each requested ref update |
 | `post_receive` | After ref updates | Handle updates that succeeded |
 
+By default, `pre_receive` decides from the request alone: the actor, each
+refname, the object IDs, and whether each update is a force. Enroute then
+stores the objects and moves the allowed refs in one log entry. If your policy
+must read the pushed commits through the API first, set
+`hooks.pre_receive_mode = "objects"`. Enroute then stores the objects
+before the call, which costs a second log entry per push. See [Read the pushed
+objects](../reference/hooks.md#read-the-pushed-objects).
+
 For request and response fields, see the [hook reference](../reference/hooks.md).
+
+## Opt-in hooks
+
+Every hook is opt-in. Enroute calls only the hooks that `hooks.enabled` lists,
+and each hook works alone. A hook that is not enabled takes a default:
+
+| Hook | Default when not enabled |
+| --- | --- |
+| `authorize` | Allow read and write. The key is the URL path without `.git`. |
+| `visible_refs` | Every ref is visible. |
+| `pre_receive` | Every command is allowed. |
+| `post_receive` | No call. |
+
+With no hooks, Enroute is an open Git server: use it on loopback, or for a
+first test. Enable `authorize` before you expose `listen.git`. See
+[Security](../operate/security.md).
 
 ## Hook limits
 
@@ -19,7 +43,7 @@ For request and response fields, see the [hook reference](../reference/hooks.md)
 | --- | --- | --- |
 | `authorize` | Map a URL to a repository, identify an actor, deny with `401`, `403`, or `404`, and attach up to 8 KiB of context | Inspect pushed objects, rewrite the URL, or run again during the same request |
 | `visible_refs` | Filter advertised ref names by actor and access type | Hide objects behind a hidden ref or hide `HEAD` independently of its target |
-| `pre_receive` | Accept or refuse individual ref commands after reading uploaded objects | Modify a command, make a push all-or-nothing, or run for `UpdateRefs` |
+| `pre_receive` | Accept or refuse individual ref commands, and read the uploaded objects if `hooks.pre_receive_mode` is `"objects"` | Modify a command, make a push all-or-nothing, or run for `UpdateRefs` |
 | `post_receive` | Send client messages and start application work | Refuse a completed update or provide reliable event delivery |
 
 ## Responsibilities
@@ -28,7 +52,7 @@ Enroute does not store access rules, branch protection, or review policy.
 Your application supplies those decisions from its identity system and its own
 data.
 
-Required hooks fail closed. A required hook must return a valid response;
+Enabled hooks fail closed. An enabled hook must return a valid response;
 transport and server errors are failures, not policy denials. Return a denial
 inside a `200` response when the application made the decision to deny.
 
@@ -43,9 +67,9 @@ separately if correctness depends on processing an event.
 ## Request context
 
 `authorize` returns a repository key, actor ID, and optional context. Enroute
-resolves the key, records the actor in traces and usage data, and passes the
-context unchanged to later hooks for that request.
-It does not parse or log the context.
+resolves the key, records the actor in traces, and passes the context
+unchanged to later hooks for that request. It does not parse or log
+the context.
 
 Large pushes can take minutes between authorization and `pre_receive`. Recheck
 time-sensitive permissions or state in the later hook.
@@ -59,8 +83,8 @@ the identity for the request is the `actor` returned by `authorize`.
 See [Verify hook signatures](../reference/verify-the-signature.md) for the
 verification procedure.
 
-## Ingestion
+## Where hooks run
 
-The server process runs hooks and moves refs. Ingestion stores uploaded
-objects and builds indexes, and can run separately. It does not move refs or
-use the hook signing key. See [Storage](storage.md).
+A compute node runs hooks. It also stores uploaded objects and moves refs. Ledger
+nodes never call your application and never use the hook signing key. See
+[Storage](storage.md).

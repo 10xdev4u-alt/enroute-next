@@ -1,0 +1,70 @@
+[package]
+name = "enroute-compute"
+description = "The compute: the nodes that do the Git work (views, Git formats, layer storage, Git traffic, maintenance)."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Waived until this crate's code meets these `cargo xtask lint` rules.
+[package.metadata.xtask]
+lint-debt = ["comments"]
+
+[dependencies]
+enroute-api.workspace = true
+enroute-signature.workspace = true
+enroute-shared.workspace = true
+anyhow.workspace = true
+arc-swap.workspace = true
+async-compression.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+crc32fast.workspace = true
+crossbeam-queue.workspace = true
+flate2.workspace = true
+foldhash.workspace = true
+futures.workspace = true
+gix-actor.workspace = true
+gix-date.workspace = true
+gix-hash.workspace = true
+gix-object.workspace = true
+gix-validate.workspace = true
+integer-encoding.workspace = true
+libdeflate-sys.workspace = true
+libdeflater.workspace = true
+rand.workspace = true
+rayon.workspace = true
+object_store.workspace = true
+parking_lot.workspace = true
+percent-encoding.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+quick_cache.workspace = true
+reqwest = { workspace = true, features = ["rustls", "stream"] }
+roaring.workspace = true
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sha1dc.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tonic.workspace = true
+tonic-reflection.workspace = true
+tracing.workspace = true
+url.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+# `F_PUNCHHOLE`, which rustix does not wrap.
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true

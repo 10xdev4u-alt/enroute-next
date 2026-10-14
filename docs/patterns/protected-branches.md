@@ -3,8 +3,8 @@
 Protected branches cannot be force-pushed, deleted, or written to directly by
 people who can otherwise push.
 
-This builds on the app from [Build a code hosting
-platform](../build/README.md), which leaves `pre_receive` allowing every
+This builds on the app from [Build a code-hosting
+application](../build/README.md), which leaves `pre_receive` allowing every
 command. Read that first: this page changes one function in it.
 
 ## Use this pattern when
@@ -138,8 +138,9 @@ asks you.
 **`reason` is all the person gets.** Their Git client prints it the way it
 prints the stderr of a hook. Name the ref and say what to do instead.
 
-**A refusal is per ref.** Enroute offers a Git client no `atomic` capability,
-so one refused ref in a push of three does not hold back the other two. Say
+**A refusal is per ref, unless the push is atomic.** One refused ref in a push
+of three does not hold back the other two. If the person pushes with
+`git push --atomic`, one refusal fails the whole push and no ref lands. Say
 which ref you refused and why, in each refusal.
 
 **Let the first push create it.** An unset `oldObjectId` is a create. Without
@@ -237,5 +238,5 @@ caller is your app.
   evidence.
 - [`pre_receive`](../reference/hooks.md#pre_receive) — every field this hook
   carries, with payloads.
-- [The contract](../reference/the-contract.md#refs) — `UpdateRefs`, which is
+- [The contract](../reference/the-contract.md#refs-and-objects) — `UpdateRefs`, which is
   how a merge lands once direct pushes are closed.

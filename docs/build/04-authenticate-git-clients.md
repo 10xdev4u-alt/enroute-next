@@ -104,6 +104,12 @@ async function dispatch(req: HookRequest): Promise<HookResponse> {
 }
 ```
 
+`authorize` is the only hook that chapter 1 enabled, so `dispatch` answers only
+it. Enroute does not call the other three hooks, and each one takes its
+default: every ref is visible, and every ref update is allowed. The empty
+answer at the end is for a hook that is enabled but not implemented. Enroute
+refuses the Git request for it.
+
 ## Authorization decisions
 
 **Answer with your key, never the path.** `repo.id` is what you passed to
@@ -163,15 +169,14 @@ A clone of a path your app does not know is a `404`:
 git clone http://ada:tok_ada@127.0.0.1:8080/acme/nothing.git
 ```
 
-A push by somebody who is not the owner is refused. Chapter 5 makes pushes work
-for the owner:
+A clone by somebody who is not the owner succeeds:
 
 ```sh
 git clone http://linus:tok_linus@127.0.0.1:8080/acme/widgets.git
 ```
 
-That last one succeeds, because reading is allowed for everyone here. Only
-writing checks the owner.
+Reading is allowed for everyone here. Only writing checks the owner, so a push
+from this clone is refused.
 
 ## Result
 
@@ -179,7 +184,7 @@ writing checks the owner.
 - Authentication from a token, with a challenge that lets Git ask for one.
 - An actor that every later hook will carry.
 
-Git can now read. It still cannot write, because a push asks two more
-questions.
+Git can now read, and the owner can push. No push policy applies yet, because
+`pre_receive` and `post_receive` are not enabled. Chapter 5 adds them.
 
 Next: [Process pushes](05-process-pushes.md).

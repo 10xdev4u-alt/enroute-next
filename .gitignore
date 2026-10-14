@@ -1,9 +1,5 @@
 /target
-*.pending-snap
 .DS_Store
-/result
-/result-*
 /.direnv
-.pgdata
 .envrc
 /.claude

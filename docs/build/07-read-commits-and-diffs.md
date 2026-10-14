@@ -278,7 +278,7 @@ Two things worth adding once the pages work:
   the cached answer for good.
 - **One shared theme.** Both packages speak the same theme format. Page CSS
   cannot reach into a tree drawn in a shadow root, so resolve the theme once
-  rather than matching colours by hand.
+  rather than matching colors by hand.
 
 That is the guide. Your app serves Git, decides who may do what, and renders
 code and diffs on a page.

@@ -1,42 +1,107 @@
+[package]
+name = "enroute"
+description = "The headless Git platform: the node, its configuration and its CLI."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "enroute"
+path = "src/lib.rs"
+
+[[bin]]
+name = "enroute"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+# Named only in `#[serde(with = "humantime_serde")]`, which machete does not
+# read.
+[package.metadata.cargo-machete]
+ignored = ["humantime-serde"]
+
+[dependencies]
+# The CLI's client for the contract.
+enroute-api.workspace = true
+enroute-signature.workspace = true
+# The seed of `enroute dev`'s signing key.
+rand.workspace = true
+# `enroute diagnose` reads each node's `/status`.
+reqwest.workspace = true
+enroute-shared.workspace = true
+enroute-ledger.workspace = true
+enroute-compute.workspace = true
+
+tonic.workspace = true
+
+object_store.workspace = true
+url.workspace = true
+# For `HeaderName` alone: a header a deployment names is refused where it is
+# configured rather than by the first call that carries it.
+http.workspace = true
+
+tokio.workspace = true
+axum.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dotenvy.workspace = true
+bytesize.workspace = true
+humantime-serde.workspace = true
+humantime.workspace = true
+
+anyhow.workspace = true
+
+tracing.workspace = true
+tracing-subscriber.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+# `reqwest-rustls`: an OTLP collector is usually `https://`.
+opentelemetry-otlp = { workspace = true, features = ["reqwest-rustls"] }
+tracing-opentelemetry.workspace = true
+
+clap.workspace = true
+mimalloc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["thread"] }
+
+[dev-dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+parking_lot.workspace = true
+reqwest = { workspace = true, features = ["stream"] }
+tempfile.workspace = true
+test-support = { path = "dev/test-support" }
+tower = { workspace = true, features = ["util"] }
+
 [workspace]
 resolver = "2"
 members = [
     "crates/api/types",
     "crates/api/signature",
-    "crates/lattice/core",
-    "crates/lattice/store",
-    "crates/server/app",
-    "crates/server/config",
-    "crates/server/postgres",
-    "crates/server/ingest-lambda",
-    "crates/git/store",
-    "crates/git/core",
-    "crates/git/cost",
-    "crates/git/graph",
-    "crates/git/graph-store",
-    "crates/git/ingest",
-    "crates/git/journal",
-    "crates/git/metadata",
-    "crates/git/objects",
-    "crates/git/packfile",
-    "crates/git/retrieve",
-    "crates/git/proto",
-    "crates/git/remote",
-    "crates/git/http",
-    "crates/git/test-support",
+    "crates/shared",
+    "crates/ledger",
+    "crates/compute",
     "dev/e2e",
-    "dev/load-test",
-    "dev/push-bench",
-    "dev/bench-support",
+    "dev/test-support",
     "dev/xtask",
 ]
-default-members = ["crates/server/app"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 license = "Apache-2.0"
+
+# Incremental state is most of `target/`, and a caching rustc wrapper cannot
+# reuse an incremental build. Line tables are enough for backtraces.
+[profile.dev]
+incremental = false
+debug = "line-tables-only"
 
 # What ships. Fat LTO across the whole graph prunes the dependency code nothing
 # reaches, and one codegen unit lets it: the default sixteen give the optimizer
@@ -60,80 +125,44 @@ codegen-units = 16
 incremental = true
 strip = false
 
-# Release codegen, but with full debug info (line tables + inlined-function
-# records) kept around. Sampling profilers can only attribute time spent in
-# inlined code back to its original function/line if that DWARF inline info
-# exists; a plain `--release` build (debug info off) collapses every inlined
-# callee into whichever caller it got folded into. Build with
-# `cargo build --profile profiling` and see `dev/profiling.md`.
+# Release codegen with full debug info, so a sampling profiler can attribute
+# time in inlined code to its source line.
 [profile.profiling]
 inherits = "release"
 debug = "full"
-# Explicit, because `release` strips and this profile inherits it. Without this
-# line the profile would carefully build the debug info and then throw it away.
+# `release` strips, and this profile inherits that.
 strip = false
-# macOS's linker leaves debug info in the intermediate object files rather
-# than the binary, referenced only by a debug map — fine for `lldb`, but it
-# means the profile stops symbolicating the moment `target/` gets cleaned or
-# the binary is copied elsewhere. `packed` runs `dsymutil` to collect
-# everything into a self-contained `.dSYM` next to the binary. Harmless on
-# Linux (where debug info is already embedded either way).
+# A self-contained `.dSYM` on macOS, so symbols survive a clean of `target/`.
 split-debuginfo = "packed"
 
 [workspace.dependencies]
 enroute-api = { path = "crates/api/types" }
 enroute-signature = { path = "crates/api/signature" }
 
-enroute-lattice-core = { path = "crates/lattice/core" }
-enroute-lattice-store = { path = "crates/lattice/store" }
-
-enroute-git-store = { path = "crates/git/store" }
-enroute-git-core = { path = "crates/git/core" }
-enroute-git-cost = { path = "crates/git/cost" }
-enroute-git-graph = { path = "crates/git/graph" }
-enroute-git-graph-store = { path = "crates/git/graph-store" }
-enroute-git-ingest = { path = "crates/git/ingest" }
-enroute-git-journal = { path = "crates/git/journal" }
-enroute-git-metadata = { path = "crates/git/metadata" }
-enroute-git-objects = { path = "crates/git/objects" }
-enroute-git-packfile = { path = "crates/git/packfile" }
-enroute-git-retrieve = { path = "crates/git/retrieve" }
-enroute-postgres = { path = "crates/server/postgres" }
-enroute-git-proto = { path = "crates/git/proto" }
-enroute-git-remote = { path = "crates/git/remote" }
-enroute-git-http = { path = "crates/git/http" }
-enroute-git-test-support = { path = "crates/git/test-support" }
-
-# What a deployment configures, in the shapes both ends share. No clap: which
-# of these a command line names is the front door's, and this is not only its.
-# Defaults off for the reason `enroute-ingest-lambda` has them off: a consumer
-# takes the `file` half — the schema, and the TOML parser under it — only if it
-# reads one. The store grammar, `Bucket` and `Secret` are outside it, because
-# the ingest client names them to build a staging store and to hold a key.
-enroute-config = { path = "crates/server/config", default-features = false }
-
-# Both ends of the ingest worker protocol. A consumer takes exactly one of its
-# `client`/`server` features; there is no sensible default for a dependency.
-enroute-ingest-lambda = { path = "crates/server/ingest-lambda", default-features = false }
+enroute-shared = { path = "crates/shared" }
+enroute-ledger = { path = "crates/ledger" }
+enroute-compute = { path = "crates/compute" }
 
 # git protocol primitives
-gix-packetline = { version = "0.23", features = ["blocking-io"] }
-gix-hash = { version = "0.27", features = ["sha1"] }
-# HashMap/HashSet keyed by ObjectId, tuned for keys that are already
-# high-entropy hashes (skips re-hashing the full SHA-1 through SipHash)
-gix-hashtable = "0.17"
+gix-packetline = { version = "0.24", features = ["blocking-io"] }
+# Parsing and writing commits, trees and tags. Ids still hash with `sha1dc`
+# in `git::oid`.
+gix-object = { version = "0.66", features = ["sha1"] }
+gix-hash = { version = "0.28", features = ["sha1"] }
+gix-actor = "0.44"
+gix-date = "0.18"
+# Git's `check_refname_format`.
+gix-validate = "0.13"
 # plain (hardware-accelerated) SHA-1 for hashing data we serve; object ids get
-# the collision-detecting one in `gix-hash`
+# the collision-detecting one, `sha1dc`
 sha1 = "0.11"
-gix-pack = "0.75"
-gix-actor = "0.43"
-gix-object = "0.65"
-gix-validate = "0.12"
-bstr = "1"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-# One-shot zlib for objects already resident in memory — faster than streaming
-# because it sees the whole input. The wire path, which doesn't, stays on `flate2`.
-libdeflater = "1"
+# Whole-buffer deflate, faster than zlib-rs on pack entries; flate2 stays for
+# streams whose compressed length is unknown.
+libdeflate-sys = "1.26"
+libdeflater = "1.26"
+# a fast, randomly seeded hasher for hot maps keyed by pushed content
+foldhash = "0.2"
 
 # object storage. Every backend it can reach, because which one a deployment
 # uses is named by a URL at startup and is not a choice this repository makes.
@@ -156,20 +185,16 @@ prost-types = "0.14"
 tonic-prost-build = "0.14"
 protox = "0.9"
 futures = "0.3"
-async-stream = "0.3"
 roaring = "0.11"
 
 # http server
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["io"] }
-tokio-stream = { version = "0.1", features = ["net"] }
+tokio-stream = "0.1"
+# A push body read as a byte stream, gunzipped as it arrives.
+tokio-util = { version = "0.7", features = ["io", "io-util"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 tower = "0.5"
-tower-http = { version = "0.7", default-features = false, features = [
-    "trace",
-    "decompression-gzip",
-    "map-request-body",
-] }
 bytes = "1"
 # Decoding a git URL segment by segment. Not `url`, which parses a whole URL
 # and would resolve the `.` and `..` a repository path must instead refuse.
@@ -193,10 +218,7 @@ tree-sitter-rust = "0.24"
 yaml-rust2 = { version = "0.12", default-features = false }
 
 # misc
-lru = "0.18"
 rayon = "1"
-# segment S3 keys: opaque, with a timestamp the janitor's grace window reads
-ulid = "3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # distributed tracing export (OTLP over HTTP). The batch span processor runs
@@ -216,59 +238,57 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = [
     "trace",
 ] }
 tracing-opentelemetry = { version = "0.33", default-features = false }
-
-# The ingest worker's runtime, and the front door's client for invoking it.
-# `aws-config` is what resolves credentials: taking the SDK rather than signing
-# by hand is most of why the front door can use a role, and it refreshes
-# credentials instead of snapshotting them. `http` is the worker's own, for the
-# response prelude.
-lambda_runtime = "1"
-# `default-https-client` is what supplies the HTTP client, and a client-less SDK
-# fails only at the first call, at runtime. The default we drop, `rustls`, is the
-# deprecated hyper-0.14 connector, which duplicates the whole TLS stack.
-aws-sdk-lambda = { version = "1", default-features = false, features = [
-    "default-https-client",
-    "rt-tokio",
-] }
-aws-config = "1"
 http = "1"
 
 # Configuration a deployment writes, and xtask's manifest reading.
 toml = "1"
+# `.env` files for the CLI, read without setting the environment.
+dotenvy = "0.15"
+# Sizes and durations in the configuration file, such as "512 MiB" and "15m".
+bytesize = { version = "2", features = ["serde"] }
+humantime-serde = "1"
+humantime = "2"
 
-# dev
-http-body-util = "0.1"
-walkdir = "2"
+arc-swap = "1"
+crc32fast = "1"
+# The buffer pool's eviction queues.
+crossbeam-queue = "0.3"
+hex = "0.4"
+integer-encoding = "4"
+libc = "0.2"
+rustix = { version = "1", features = ["fs", "process"] }
+# The enroute binary's allocator: glibc's costs a busy compute much CPU.
+mimalloc = "0.1"
+parking_lot = "0.12"
+quick_cache = "0.7"
+sha1dc = "0.1.5"
+slog = "2"
+zerocopy = { version = "0.8", features = ["derive"] }
+# The ledger's on-disk state machine (enroute-ledger::state_store). Pure Rust:
+# no C++ to build. The LSM tree alone, without Fjall's write-ahead log: the
+# Raft log already holds what a crash loses.
+lsm-tree = { version = "3.1", features = ["lz4"] }
+# raft-rs's own messages are prost 0.11; used only where we encode or decode
+# them (the log store's codec, the Raft transport).
+raft-prost = { package = "prost", version = "0.11" }
+# raft-rs and raft-engine from git, as TiKV does, pinned for
+# reproducibility. raft-rs: the crates.io release (0.7.0, 2023) needs a 3.x
+# `protoc` at build time and lacks later fixes; master with the prost codec
+# does not. raft-engine: pluggable value codecs (prost entries, see
+# `logdb.rs`) are newer than its last release (0.4.2).
+raft-engine = { git = "https://github.com/tikv/raft-engine", rev = "097c499a19fbb38754c73aa2f31532329df7c0c6", default-features = false }
+raft = { git = "https://github.com/tikv/raft-rs", rev = "ad13f3d90780f53aea2488c6a4b76c0d334bf136", default-features = false, features = ["prost-codec"] }
+
 tempfile = "3"
-insta = "1"
-proptest = "1"
-proptest-state-machine = "0.8"
 rand = "0.10"
-rand_distr = "0.6"
-rlt = "0.5.0"
-# Process CPU time across every thread, without this workspace taking on
-# `unsafe` to call `getrusage` itself.
-cpu-time = "1"
-# Hardware instruction counters, same reasoning for `perf_event_open`.
-perf-event = "0.4"
 reqwest = { version = "0.13", default-features = false }
 async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 
-# commit-graph metadata store (Postgres)
-sqlx = { version = "0.9", default-features = false, features = [
-    "runtime-tokio",
-    "tls-rustls",
-    "postgres",
-    "uuid",
-    # The schema's ledger, checksums and transactional apply. Not `macros`:
-    # the steps are embedded with `include_str!`, so nothing here needs a
-    # proc macro or the migrations directory at runtime.
-    "migrate",
-] }
-# Binary `COPY ... FROM STDIN` for the identity table, which takes a row per
-# object in a push and is the largest write there is.
-sqlx-pg-copy = "0.2"
+# tests and dev tools only
+walkdir = "2"
+proptest = "1"
+proptest-state-machine = "0.8"
 uuid = { version = "1", features = ["v4"] }
 
 # auth: Basic-auth header decoding, and the digests the hook signatures cover.
@@ -278,6 +298,8 @@ sha2 = "0.11"
 # `openssl genpkey -algorithm ed25519` already wrote, rather than a shape only
 # this workspace knows how to read.
 ed25519-dalek = { version = "3", features = ["pkcs8", "pem"] }
+# RFC 9651 structured fields, the syntax of the RFC 9421 headers.
+sfv = "0.16"
 
 [workspace.lints.rust]
 # Only sees within a crate, and only for items that are not `pub` — rustc has

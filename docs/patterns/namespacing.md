@@ -3,9 +3,8 @@
 Namespacing groups repositories under an owner, a team, or a project, so that
 two groups can each have a `backend` and nobody has to see the other's.
 
-Enroute serves one application and stores repositories under flat keys that are
-unique across the deployment. It has no concept of a group, an owner, or a
-path. This page is how to build one anyway, and what each way costs.
+Enroute serves one application and stores repositories under keys that are
+unique across the deployment. It has no concept of a group or an owner. This page is how to build one anyway, and what each way costs.
 
 ## Use this pattern when
 
@@ -21,8 +20,8 @@ not make a wrong answer safe.
 
 If you need a boundary that holds when your application is wrong, a namespace
 is the wrong tool. Run a second Enroute: its own configuration, its own
-database, and its own bucket. Nothing in one deployment can name anything in
-another, because there is no shared table for a name to resolve against.
+node disks, and its own bucket. Nothing in one deployment can name anything in
+another, because there is no shared state for a name to resolve against.
 
 ## The URL is already yours
 
@@ -39,6 +38,8 @@ git clone https://git.example.com/acme/backend.git
 Your `authorize` implementation receives `repo_path` as `/acme/backend.git`,
 looks it up in your own table, and returns whatever key that repository has.
 The key does not have to resemble the path, and should not — see below.
+If `authorize` is not enabled, the path without `.git` is the key, here
+`acme/backend`.
 
 Namespaced clone URLs therefore need nothing from this page. What follows is
 only about the *key*.
@@ -67,8 +68,8 @@ never sees either string.
 
 This is the recommendation, and it is the same advice as
 [Repository lifecycle](repository-lifecycle.md): do not put a name in a key.
-A namespace is a name, and names move. An organisation renames itself, a
-project transfers between teams, a personal account becomes an organisation.
+A namespace is a name, and names move. An organization renames itself, a
+project transfers between teams, a personal account becomes an organization.
 Each of those rewrites `acme/backend`, and a key that spelled it would have to
 be rewritten too — which Enroute has no operation for, because a key is what a
 repository *is*. A UUID survives every one of those events untouched.
@@ -79,17 +80,15 @@ You may want the key readable anyway: in a log line, in a metrics label, in a
 storage listing, when someone is trying to work out which repository is filling
 a bucket. The cost is the instability above, and it is a real cost.
 
-If you accept it, the key charset already allows it. A key is ASCII letters and
-digits, `-`, `_` and `.`, starting and ending with a letter or digit. So:
+If you accept it, the key charset already allows it. A key holds segments
+separated by `/`. Each segment is ASCII letters and digits, `-`, `_` and `.`,
+and starts and ends with a letter or digit. So:
 
 ```
-acme.backend
-acme-backend
+acme/backend
 ```
 
-Pick one separator and never use it inside either half, or `acme.backend.v2`
-becomes ambiguous. A key holds no `/`: a key is one path segment, so it needs
-no escaping wherever it is written.
+No segment can hold a `/`, so the separator is never ambiguous.
 
 If you do this, treat the key as frozen at creation. When the namespace is
 renamed, your table changes and the key does not. The key stops describing the
@@ -102,14 +101,13 @@ repository at all.
 it, byte for byte:
 
 ```ts
-const { repositories } = await listRepositories({ prefix: "acme." });
+const { repositories } = await listRepositories({ prefix: "acme/" });
 ```
 
-Send the separator. `acme` matches `acmex` as readily as `acme.web`, because
-Enroute reads nothing out of a key beyond the bytes you asked about — where a
-namespace ends is your convention, not something inferred here.
+Send the separator. `acme` matches `acmex` as readily as `acme/web`, because
+the prefix is bytes, not segments.
 
-The walk is a half-open range over the key index, from `acme.` up to `acme/`,
+The walk is a half-open range over the key index, from `acme/` up to `acme0`,
 so a page costs what the group costs rather than what the deployment does. A
 page token belongs to the prefix that minted it; sending one back under a
 different prefix is refused rather than resumed somewhere else.

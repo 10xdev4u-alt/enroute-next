@@ -179,9 +179,9 @@ message FindMergeBasesRequest {
 }
 
 message FindMergeBasesResponse {
-  // Newest first, and empty when the two share no history at all — or when
-  // either commit is unknown here, which is the same answer a caller can act
-  // on: not a history this repository can vouch for.
+  // A set, in no defined order, and empty when the two share no history at
+  // all — or when either commit is unknown here, which is the same answer a
+  // caller can act on: not a history this repository can vouch for.
   repeated common.v1alpha1.ObjectId base_commit_ids = 1;
 
   // Set when the walk stopped before it had looked at everything, so

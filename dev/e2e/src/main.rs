@@ -1,5 +1,5 @@
 //! Differential state-machine test: two simulated clients alternate staging,
-//! committing, and pushing, each through a enroute repo and a `git daemon` oracle.
+//! committing, and pushing, each to Enroute and to a `git daemon` oracle.
 //!
 //! `git daemon` is ground truth, so the reference model only needs to track
 //! which files currently exist, never to be a content oracle itself.
@@ -19,8 +19,8 @@ use tokio::runtime::{Handle, Runtime};
 /// One process-wide runtime, shared by every `init_test()` call via
 /// [`shared_runtime_handle`].
 ///
-/// A fresh per-`Sut` runtime dropped at test-case end can strand the shared
-/// Postgres pool's later runtimes without connections.
+/// The shared deployment's servers run on it, so a per-`Sut` runtime dropped
+/// at the end of a case would stop them for every later case.
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn shared_runtime_handle() -> Handle {
@@ -32,25 +32,29 @@ fn shared_runtime_handle() -> Handle {
 
 mod contract;
 mod daemon;
+mod engine;
 mod git_http;
 mod grpc;
 mod hooks;
 mod maintenance;
 mod model;
+mod open;
 mod password_hint;
 mod pre_receive;
 mod support;
 mod visible_refs;
 use daemon::OracleDaemon;
-use enroute::maintenance::Maintenance;
 use model::{
-    ClientId, ModifyOp, OracleStateMachine, Patience, RefState, ResyncKind, SyncKind, Transition,
-    WorkTree, copy_destination,
+    ClientId, ModifyOp, OracleStateMachine, RefState, ResyncKind, SyncKind, Transition, WorkTree,
+    copy_destination,
 };
-use support::{
-    ALICE, git, init_tracing, key_for, make_state, read_graph, read_missing_objects, read_tags,
-    spawn_server,
-};
+use support::{Stack, git, init_tracing, read_graph, read_missing_objects, read_tags};
+
+/// One deployment for the whole run, shared by every `init_test()` call.
+///
+/// `proptest-state-machine` calls `init_test` hundreds of times per run, so
+/// each case gets a repository of its own, not a deployment.
+static STACK: tokio::sync::OnceCell<Stack> = tokio::sync::OnceCell::const_new();
 
 /// Apply a `ModifyOp` to the file at `path`, reading and rewriting whatever
 /// content is already there.
@@ -184,10 +188,6 @@ struct Sut {
     b_oracle: std::path::PathBuf,
     enroute_url: String,
     oracle_daemon: OracleDaemon,
-    /// Stopped when this case ends.
-    ///
-    /// Each pins the Postgres connection its `pg_temp` tenancy lives in.
-    _servers: support::Servers,
     current: std::cell::Cell<ClientId>,
     /// Paths currently holding a submodule gitlink, staged directly via
     /// `git update-index` rather than the working tree.
@@ -195,10 +195,10 @@ struct Sut {
     /// `commit()` excludes them from `git add -A` so a gitlink with nothing
     /// on disk is never misread as a deleted path.
     submodule_paths: std::cell::RefCell<std::collections::BTreeSet<String>>,
-    /// What a maintenance pass runs against, and which repository is this
-    /// case's — the store is shared with every other case in the run.
-    storage: enroute::Storage,
-    repo: enroute_git_retrieve::RepoMetadata,
+    /// The deployment, shared with every other case in the run.
+    stack: &'static Stack,
+    /// The key of this case's repository.
+    repo: String,
     /// How many verification clones this case has taken, so each gets a
     /// directory of its own.
     verifications: std::cell::Cell<u32>,
@@ -609,26 +609,13 @@ impl Sut {
         }
     }
 
-    /// Run a maintenance pass over this case's repository, then read the whole
-    /// repository back from scratch and check it against the oracle.
+    /// Wait for maintenance of this case's repository to settle, then read
+    /// the whole repository back from scratch and check it against the oracle.
     ///
     /// The clients' clones already hold every object, so only a clone into a
     /// fresh directory re-reads what a pass rewrote.
     #[tracing::instrument(skip_all)]
-    fn maintain(&self, patience: Patience) {
-        let config = match patience {
-            Patience::Patient => Maintenance::default(),
-            // Nothing is left for a later pass: retired rows are dropped and
-            // their objects swept in this one. Safe here because this case's
-            // repository is its own, and the state machine pushes nothing
-            // while a pass runs.
-            Patience::Impatient => Maintenance {
-                grace_secs: 0,
-                deleted_grace_secs: 0,
-                dry_run: false,
-            },
-        };
-
+    fn maintain(&self) {
         let scratch = self.tmp.path().join(format!(
             "verify-{}",
             self.verifications.replace(self.verifications.get() + 1)
@@ -637,9 +624,7 @@ impl Sut {
         let oracle_at = scratch.join("oracle");
 
         self.rt.block_on(async {
-            enroute::maintenance::run_repo(&self.storage, &self.repo, config)
-                .await
-                .expect("a maintenance pass");
+            self.stack.maintain(&self.repo).await;
 
             // Two clones of the same history, one from each remote, neither
             // of them a repository the model tracks.
@@ -733,20 +718,16 @@ impl StateMachineTest for OracleStateMachine {
         let rt = shared_runtime_handle();
         let tmp = tempfile::tempdir().unwrap();
 
-        // Unique per call so concurrent/repeated `init_test` calls against the
-        // shared schema (`support::make_state`) never collide on `(owner, name)`.
+        // Unique per call, so concurrent and repeated `init_test` calls on the
+        // shared deployment never collide on a key.
         let repo_name = format!("repo-{}", uuid::Uuid::new_v4());
-        let (enroute_addr, alice_token, _landed, servers, storage, repo) = rt.block_on(async {
-            let state = make_state().await;
-            let repo = state.rows.create(None, &key_for(&repo_name)).await.unwrap();
-            let (addr, token, landed, servers) = spawn_server(state.clone(), &[&repo_name]).await;
-            (addr, token, landed, servers, state, repo)
+        let (stack, repo) = rt.block_on(async {
+            let stack = STACK.get_or_init(Stack::start).await;
+            (stack, stack.create(&repo_name).await)
         });
-        // Credentials embedded in the URL: git and reqwest both read a
-        // `user:pass@host` authority as Basic auth without further setup.
-        // No namespace segment in the path — the server reads that from the
-        // Host header instead (see `support::git`'s `http.extraHeader`).
-        let enroute_url = format!("http://{ALICE}:{alice_token}@{enroute_addr}/{repo_name}.git");
+        // Credentials in the URL: git reads a `user:pass@host` authority as
+        // Basic auth with no more setup.
+        let enroute_url = stack.url(&repo_name);
 
         let oracle = OracleDaemon::spawn(tmp.path());
 
@@ -795,10 +776,9 @@ impl StateMachineTest for OracleStateMachine {
             b_oracle,
             enroute_url,
             oracle_daemon: oracle,
-            _servers: servers,
             current: std::cell::Cell::new(ClientId::A),
             submodule_paths: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            storage,
+            stack,
             repo,
             verifications: std::cell::Cell::new(0),
         }
@@ -837,7 +817,7 @@ impl StateMachineTest for OracleStateMachine {
                 name,
                 annotated,
             } => state.create_tag(*commit_id, name, *annotated),
-            Transition::Maintain { patience } => state.maintain(*patience),
+            Transition::Maintain => state.maintain(),
         }
         state
     }
@@ -895,11 +875,12 @@ fn main() {
     let config = proptest::test_runner::Config {
         cases,
         // Outside a `#[test]`, proptest has no `file!()` to derive a
-        // regressions path from; pin one explicitly instead.
+        // regressions path from. Absolute, so it works from any directory.
         failure_persistence: Some(Box::new(
-            proptest::test_runner::FileFailurePersistence::Direct(
-                "dev/e2e/e2e.proptest-regressions",
-            ),
+            proptest::test_runner::FileFailurePersistence::Direct(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/e2e.proptest-regressions"
+            )),
         )),
         ..proptest::test_runner::Config::default()
     };

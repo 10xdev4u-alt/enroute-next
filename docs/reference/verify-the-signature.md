@@ -26,7 +26,7 @@ digest header; a signature library does not validate the body for you.
 
 ## Test vector
 
-The local stack uses the RFC 9421 `test-key-ed25519` key. For a `POST` with
+This vector uses the RFC 9421 `test-key-ed25519` key. For a `POST` with
 body `hello` to `https://example.com/api/enroute/hooks` and
 `created=1700000000`, it produces:
 
