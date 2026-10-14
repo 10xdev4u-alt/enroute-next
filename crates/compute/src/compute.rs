@@ -45,10 +45,10 @@ pub struct ComputeConfig {
     pub evict_after: std::time::Duration,
     /// How long a compute node's maintenance lease on a repository lasts
     /// (after its holder dies, another takes over within this; see
-    /// [`crate::maintenance`]).
+    /// `crate::maintenance`).
     pub maintenance_lease: std::time::Duration,
     /// How often the layer sweep runs on each repository this node
-    /// maintains (see [`crate::maintenance`]): it advances the upload
+    /// maintains (see `crate::maintenance`): it advances the upload
     /// generation when that lets it delete something, so a publish has
     /// about `UPLOAD_GEN_WINDOW` of these between its upload and its
     /// commit.
@@ -232,7 +232,7 @@ impl Compute {
     }
 
     /// The repository, created first if it does not exist and the
-    /// configuration says pushes create (else [`RepoNotFound`]).
+    /// configuration says pushes create (else `RepoNotFound`).
     pub(crate) async fn ensure_repo(&self, name: &str) -> Result<Arc<Repo>> {
         self.states
             .ensure(name, self.config.create_on_push)
@@ -305,7 +305,7 @@ impl Compute {
 
     /// Delete `name` (a missing or deleted one too). Its name is free at
     /// once; its layer files are reclaimed later (see
-    /// [`crate::maintenance`]).
+    /// `crate::maintenance`).
     ///
     /// # Errors
     ///
@@ -365,7 +365,7 @@ impl Compute {
     /// freshly built layer) published and appended to its `add_layers` if
     /// given. Returns once the ledger answers: a following read sees the
     /// outcome through any node, because reads take a read barrier.
-    /// [`RepoNotFound`] if the repository was deleted. An unstamped commit
+    /// `RepoNotFound` if the repository was deleted. An unstamped commit
     /// gets this node's clock as its refs' update time. If a stored layer was
     /// published in an upload generation that has since expired (a slow
     /// publish), copy it within the object store under the current

@@ -725,6 +725,9 @@ mod tests {
         let before = at(());
         let now = now_unix_secs();
         let after = at(());
-        assert!(before <= now && now <= after, "{before} <= {now} <= {after}");
+        assert!(
+            before <= now && now <= after,
+            "{before} <= {now} <= {after}"
+        );
     }
 }

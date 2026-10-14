@@ -4,6 +4,7 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  merge_group:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -12,36 +13,97 @@ concurrency:
 permissions:
   contents: read
 
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+env:
+  CARGO_TERM_COLOR: always
 
-      # The channel comes from rust-toolchain.toml, so the compiler here is the
-      # one the workspace pins and this file names no version.
-      - name: Install the pinned toolchain
-        run: rustup toolchain install
+# Every step below names checks rather than commands: `cargo xtask ci <checks>`
+# is the same program a laptop runs, so this file and that one cannot drift.
+# `cargo xtask ci verify-workflow` fails when a check stops being named here.
+jobs:
+  # Everything that needs no Rust build: the pinned checkers, the guard on this
+  # file, the shell checks, and the summary of what the run proved.
+  pipeline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
 
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # Pinned versions from dev/xtask/src/ci/tools.rs, installed under
+      # `target/tools`, which the other jobs download.
+      - run: cargo xtask ci tools
 
-      # The repository's own rules: import shape, comment shape, dead code
-      # across crates, layering, manifest inheritance, the contract and the
-      # copy of it inside the skill. Clippy covers none of them.
-      - run: cargo xtask lint
+      - run: cargo xtask ci shell
 
-      - run: cargo test --workspace
+      - run: cargo xtask ci verify-workflow
 
-  # install.sh reaches users through `curl -sSL ... | sh`, and the glibc gate
-  # it carries decides whether the Linux binaries run at all.
-  shell:
-    runs-on: ubuntu-latest
+      # What a green run means, in the run itself, so the next reader does not
+      # have to open the workflow to find out what was checked.
+      - run: cargo xtask ci list --markdown >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: checkers
+          path: target/tools
+          if-no-files-found: error
+          retention-days: 1
+
+  lint:
+    needs: [pipeline]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - run: sh -n install.sh
-      - run: shellcheck install.sh
-      - run: sh dev/install-version-test.sh
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: checkers
+          path: target/tools
+
+      # The artifact is what makes this cheap, and this is what makes it
+      # correct: an artifact can carry a copy without its mode, and `tools`
+      # repairs that instead of downloading the checker again.
+      - run: cargo xtask ci tools
+
+      - run: cargo xtask ci fmt clippy lint
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - run: cargo xtask ci unit doc
+
+  # In its own job because it is the long pole: a unit-test failure arrives
+  # while this one is still linking, instead of after it.
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace
+
+      - run: cargo xtask ci e2e

@@ -83,7 +83,7 @@ pub struct LedgerConfig {
     /// The state store's memory: its block cache and memtables.
     pub state_memory_bytes: usize,
     /// Checkpoint a repository's state at most this long after it changed
-    /// (or after [`CHECKPOINT_ENTRIES`] entries, or once its log is quiet).
+    /// (or after `CHECKPOINT_ENTRIES` entries, or once its log is quiet).
     pub checkpoint_age: Duration,
     /// Checkpoints written at once.
     pub checkpoint_concurrency: usize,

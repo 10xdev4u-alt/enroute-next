@@ -70,6 +70,7 @@ fn checker(program: &str, args: &[&str], root: &Path) -> Result<String, String> 
     let output = Command::new(program)
         .args(args)
         .current_dir(root)
+        .env("PATH", super::ci::tools::search_path(root))
         .output()
         .map_err(|err| err.to_string())?;
 

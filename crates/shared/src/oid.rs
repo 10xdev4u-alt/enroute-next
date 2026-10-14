@@ -211,7 +211,8 @@ mod tests {
         for bad in ["", "abc", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
             assert!(Oid::from_hex(bad).is_err(), "{bad:?}");
         }
-        for bad in [hex[..39].to_string(), format!("{hex}0")] {
+        // One character short, and one too many: the length is exact.
+        for bad in [hex.chars().take(39).collect::<String>(), format!("{hex}0")] {
             assert!(Oid::from_hex(&bad).is_err(), "{bad:?}");
         }
     }
@@ -247,10 +248,16 @@ mod tests {
 
     /// `from_slice` documents a panic for a slice shorter than `OID_LEN`,
     /// because truncating or zero-padding would name a different object than
-    /// the caller passed. A change to that contract has to be deliberate.
+    /// the caller passed. A change to that contract has to be deliberate, so
+    /// the expected panic — not merely a panic — is pinned: a caller that
+    /// starts recovering by name would otherwise read a message that moved.
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "out of range for slice of length")]
     fn from_slice_panics_on_a_short_slice() {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "the panic is the assertion: no value reaches the binding"
+        )]
         let _ = Oid::from_slice(&[0u8; OID_LEN - 1]);
     }
 }

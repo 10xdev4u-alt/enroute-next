@@ -19,7 +19,7 @@ use crate::config::Telemetry;
 /// Initializes the global tracing subscriber.
 ///
 /// Console logging (via `RUST_LOG`, `console` when unset) is always on. With `telemetry`, spans also
-/// export over OTLP — see [`build_tracer`].
+/// export over OTLP — see `build_tracer`.
 ///
 /// # Errors
 ///
