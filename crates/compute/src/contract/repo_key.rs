@@ -214,4 +214,26 @@ mod tests {
         assert!(said.contains("letters"), "{said}");
         assert!(said.contains(&MAX_REPO_KEY_BYTES.to_string()), "{said}");
     }
+
+    /// The local layer cache writes a key's `/` as `%2F` so that one
+    /// repository is one directory. That stays injective only while no key
+    /// contains `%`, and this module is the rule that keeps `%` out. The two
+    /// live apart, so the assertion lives here, beside the rule that makes it
+    /// true.
+    #[test]
+    fn a_key_cannot_look_like_the_layer_cache_escape() {
+        for repo in ["acme", "acme/widgets", "a/b/c"] {
+            let escaped = crate::storage::local_dir_name(repo);
+            assert_eq!(
+                escaped.contains('%'),
+                repo.contains('/'),
+                "{repo} escaped to {escaped}"
+            );
+            if escaped != repo {
+                assert!(!RepoKey::is_valid(&escaped), "{escaped} is a key");
+            }
+        }
+        assert!(RepoKey::is_valid("acme/widgets"));
+        assert!(!RepoKey::is_valid("acme%2Fwidgets"));
+    }
 }
