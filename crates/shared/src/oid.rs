@@ -224,4 +224,24 @@ mod tests {
         bytes.extend_from_slice(&[0xff; 8]);
         assert_eq!(Oid::from_slice(&bytes).as_bytes(), &[0x5a; OID_LEN]);
     }
+
+    /// A peer may add a field to `message Oid`. Decoding a message that carries
+    /// one must still yield the id: refusing it would make this node unable to
+    /// read a newer writer's state.
+    #[test]
+    fn an_unknown_field_is_skipped() {
+        use prost::Message as _;
+
+        let oid = Oid::from_hex("0123456789abcdef0123456789abcdef01234567").unwrap();
+        let mut buf = oid.encode_to_vec();
+        // Field 2, length-delimited: key 0x12, length 3, "abc".
+        buf.extend_from_slice(&[0x12, 0x03, b'a', b'b', b'c']);
+        assert_eq!(Oid::decode(&buf[..]).unwrap(), oid);
+
+        // And before the id, where a decoder that stopped at the first
+        // unexpected key would lose it.
+        let mut before = vec![0x12, 0x03, b'a', b'b', b'c'];
+        before.extend_from_slice(&oid.encode_to_vec());
+        assert_eq!(Oid::decode(&before[..]).unwrap(), oid);
+    }
 }
