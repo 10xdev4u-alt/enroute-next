@@ -81,3 +81,61 @@ pub(crate) fn try_hash_object(kind: Kind, data: &[u8]) -> anyhow::Result<Oid> {
 pub(crate) fn hash_object(kind: Kind, data: &[u8]) -> Oid {
     try_hash_object(kind, data).expect("collision attack in locally generated object")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    /// The four codes are git's pack type codes. Pinned as literals, because a
+    /// reordering of the enum would keep a round trip passing.
+    #[test]
+    fn the_pack_codes_are_gits() {
+        assert_eq!(Kind::Commit.code(), 1);
+        assert_eq!(Kind::Tree.code(), 2);
+        assert_eq!(Kind::Blob.code(), 3);
+        assert_eq!(Kind::Tag.code(), 4);
+    }
+
+    #[test]
+    fn the_pack_code_round_trips() {
+        for kind in Kind::ALL {
+            assert_eq!(Kind::from_code(kind.code()), Some(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_code_that_is_no_kind_is_refused() {
+        for code in [0_u8, 5, 6, 7, 255] {
+            assert_eq!(Kind::from_code(code), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn every_kind_has_its_own_index() {
+        for (i, kind) in Kind::ALL.iter().enumerate() {
+            assert_eq!(kind.idx(), i, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn every_kind_has_its_own_name() {
+        let names: BTreeSet<&str> = Kind::ALL.iter().map(|kind| kind.name()).collect();
+        assert_eq!(names.len(), Kind::ALL.len());
+        assert!(names.contains("commit"));
+        assert!(names.contains("tag"));
+    }
+
+    /// The header is git's, `<kind> <len>\0<data>`, so the id is the one `git
+    /// hash-object` prints for the same content. The literal catches a wrong
+    /// kind name, a wrong length and a missing NUL in one assertion.
+    #[test]
+    fn hashing_matches_gits_object_header() {
+        // printf 'hello, world\n' | git hash-object --stdin
+        assert_eq!(
+            hash_object(Kind::Blob, b"hello, world\n").to_hex(),
+            "4b5fa63702dd96796042e92787f464e28f09f17d"
+        );
+    }
+}
