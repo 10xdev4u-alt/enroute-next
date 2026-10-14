@@ -711,4 +711,20 @@ mod tests {
         let public = VerifyingKey::from_pem(TEST_PUBLIC_KEY).expect("the RFC's public key");
         assert_eq!(private.keyid(), public.keyid());
     }
+
+    /// The skew window is measured with this value at both ends, so it has to
+    /// be the system clock in whole seconds and not something else.
+    #[test]
+    fn the_clock_helper_reports_unix_seconds() {
+        let at = |()| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("after the epoch")
+                .as_secs()
+        };
+        let before = at(());
+        let now = now_unix_secs();
+        let after = at(());
+        assert!(before <= now && now <= after, "{before} <= {now} <= {after}");
+    }
 }
