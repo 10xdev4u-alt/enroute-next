@@ -437,4 +437,49 @@ mod tests {
         }
         assert_eq!(first.len(), 5);
     }
+
+    /// A node rewrites its entry every `HEARTBEAT` and is counted dead after
+    /// `ALIVE`. If the refresh were not the shorter of the two, every node
+    /// would be dead as often as it was alive, and compute nodes would route
+    /// around a healthy ledger.
+    #[test]
+    fn a_node_refreshes_its_entry_faster_than_it_expires() {
+        assert!(
+            HEARTBEAT < ALIVE,
+            "refresh {HEARTBEAT:?} must be shorter than the liveness window {ALIVE:?}"
+        );
+    }
+
+    /// Both lists are stored, so the encoded field names are part of the
+    /// object's format and a rename makes an existing registry unreadable.
+    #[test]
+    fn members_round_trip_through_serde() {
+        let members = Members {
+            members: vec![1, 2, 3],
+            removed: vec![4],
+        };
+        let encoded = serde_json::to_string(&members).unwrap();
+        assert_eq!(encoded, r#"{"members":[1,2,3],"removed":[4]}"#);
+        assert_eq!(serde_json::from_str::<Members>(&encoded).unwrap(), members);
+    }
+
+    #[test]
+    fn an_empty_registry_is_the_default() {
+        assert_eq!(
+            Members::default(),
+            Members {
+                members: Vec::new(),
+                removed: Vec::new(),
+            }
+        );
+    }
+
+    /// The stored form carries both lists. A reader that accepted a document
+    /// missing one would read a truncated write as an empty registry, which is
+    /// the failure `removed` exists to prevent.
+    #[test]
+    fn a_members_document_missing_a_list_is_refused() {
+        assert!(serde_json::from_str::<Members>("{}").is_err());
+        assert!(serde_json::from_str::<Members>(r#"{"members":[1]}"#).is_err());
+    }
 }
