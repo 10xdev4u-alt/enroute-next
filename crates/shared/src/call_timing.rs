@@ -69,3 +69,57 @@ pub fn log<T>(call: &str, res: &Result<Response<T>, tonic::Status>, t0: std::tim
         tracing::debug!(target: "enroute::ledger_call", call, total_us = total, to_us = to, handler_us = handler, back_us = back, "ledger call timing");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SENT: &str = "x-enroute-sent-us";
+
+    #[test]
+    fn a_request_without_the_header_has_no_send_time() {
+        assert_eq!(sent(&Request::new(())), None);
+    }
+
+    #[test]
+    fn a_stamped_request_reports_its_send_time() {
+        let mut req = Request::new(());
+        if let Ok(value) = "1700000000000000".parse() {
+            req.metadata_mut().insert(SENT, value);
+        }
+        assert_eq!(sent(&req), Some(1_700_000_000_000_000));
+    }
+
+    /// Without a send time there is no leg to attribute, so the answer must
+    /// gain nothing. A response that carried half the stamps would be worse
+    /// than one that carried none, because the log reads them as a set.
+    #[test]
+    fn stamping_an_unstamped_call_adds_no_metadata() {
+        let res = stamp(Response::new(()), None, std::time::Instant::now());
+        assert!(res.metadata().is_empty());
+        assert_eq!(res.into_inner(), ());
+    }
+
+    #[test]
+    fn a_stamped_call_reports_its_three_times() {
+        let res = stamp(
+            Response::new(()),
+            Some(unix_us()),
+            std::time::Instant::now(),
+        );
+        for key in [
+            "x-enroute-to-us",
+            "x-enroute-handler-us",
+            "x-enroute-done-us",
+        ] {
+            assert!(res.metadata().contains_key(key), "{key}");
+        }
+    }
+
+    /// The wall clock is microseconds since the epoch, so it is positive for
+    /// any time this test runs.
+    #[test]
+    fn the_wall_clock_is_after_the_epoch() {
+        assert!(unix_us() > 0);
+    }
+}
