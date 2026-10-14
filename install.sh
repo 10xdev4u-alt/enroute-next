@@ -36,15 +36,38 @@ target() {
 
 # The Linux binaries link against glibc 2.36. A loader error after install
 # says less than this does.
+# Whether a `major.minor` glibc version is at least 2.36.
+#
+# Compared as a pair rather than by stripping the literal `2.`, which would read
+# a `3.0` system as version 3 and refuse it.
+glibc_at_least_2_36() {
+	version=$1
+	major="${version%%.*}"
+	case "${major}" in
+	"" | *[!0-9]*) return 1 ;;
+	esac
+	if [ "${version}" = "${major}" ]; then
+		minor=0
+	else
+		minor="${version#*.}"
+		minor="${minor%%.*}"
+	fi
+	case "${minor}" in
+	"" | *[!0-9]*) return 1 ;;
+	esac
+	if [ "${major}" -gt 2 ]; then
+		return 0
+	fi
+	[ "${major}" -eq 2 ] && [ "${minor}" -ge 36 ]
+}
+
 linux() {
 	glibc="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
 	case "${glibc}" in
 	"glibc "*) ;;
 	*) fail "the Linux binaries need glibc, and this system does not report one (musl?). Run the image instead." ;;
 	esac
-	minor="${glibc#glibc 2.}"
-	minor="${minor%%.*}"
-	if [ "${minor}" -lt 36 ]; then
+	if ! glibc_at_least_2_36 "${glibc#glibc }"; then
 		fail "the Linux binaries need glibc 2.36 or later, and this system has ${glibc#glibc }."
 	fi
 	echo "$1-unknown-linux-gnu"
