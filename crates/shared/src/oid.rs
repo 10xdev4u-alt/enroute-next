@@ -244,4 +244,13 @@ mod tests {
         before.extend_from_slice(&oid.encode_to_vec());
         assert_eq!(Oid::decode(&before[..]).unwrap(), oid);
     }
+
+    /// `from_slice` documents a panic for a slice shorter than `OID_LEN`,
+    /// because truncating or zero-padding would name a different object than
+    /// the caller passed. A change to that contract has to be deliberate.
+    #[test]
+    #[should_panic]
+    fn from_slice_panics_on_a_short_slice() {
+        let _ = Oid::from_slice(&[0u8; OID_LEN - 1]);
+    }
 }
