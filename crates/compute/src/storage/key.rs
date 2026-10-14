@@ -119,4 +119,14 @@ mod tests {
             }
         }
     }
+
+    /// The field names are part of the stored form: a key is written into the
+    /// manifest, so a rename would make an existing manifest unreadable.
+    #[test]
+    fn a_key_round_trips_through_serde() {
+        let key = FileKey::new("acme/widgets", "0123abcd");
+        let encoded = serde_json::to_string(&key).unwrap();
+        assert_eq!(encoded, r#"{"repo":"acme/widgets","id":"0123abcd"}"#);
+        assert_eq!(serde_json::from_str::<FileKey>(&encoded).unwrap(), key);
+    }
 }
