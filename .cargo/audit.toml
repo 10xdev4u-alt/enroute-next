@@ -1,0 +1,14 @@
+# The nightly `cargo audit` job reads this (`cargo audit` looks for
+# `.cargo/audit.toml` in the project root). Its rule is that every entry here
+# names a finding this deployment cannot fix, with the reason it is not
+# reachable. Anything else fails the job, which is the point of running it.
+[advisories]
+ignore = [
+    # protobuf 2.x: a stack overflow in `CodedInputStream::skip_group`, which
+    # parses an unknown field of *untrusted* input. Nothing here parses one:
+    # the crate arrives through prometheus (metrics exposition, which encodes)
+    # and raft-engine's own records, and both are this deployment's data.
+    # Patched only in protobuf 3.x, which needs prometheus and raft-engine to
+    # move first; remove this entry when they do.
+    "RUSTSEC-2024-0437",
+]
