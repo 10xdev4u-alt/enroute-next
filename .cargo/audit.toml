@@ -1,4 +1,5 @@
-# What the nightly `cargo audit` job reads. Its rule is that every entry here
+# The nightly `cargo audit` job reads this (`cargo audit` looks for
+# `.cargo/audit.toml` in the project root). Its rule is that every entry here
 # names a finding this deployment cannot fix, with the reason it is not
 # reachable. Anything else fails the job, which is the point of running it.
 [advisories]
