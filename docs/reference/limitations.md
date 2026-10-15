@@ -35,6 +35,10 @@ Enroute is a `0.x` release with the following current limits.
   object store.
 - Enroute does not encrypt data at rest or collect unreachable branch objects.
 - SHA-1 is the only object format. Enroute creates no merge commits.
+- Collision detection recognizes an attack only where its blocks open the message being
+  hashed. An object carries git's header in front of its data, so a published attack that is
+  replayed as an object is not refused; the pair that is published does not collide as an
+  object either. See [#78](https://github.com/10xdev4u-alt/enroute-next/issues/78).
 - `visible_refs` hides ref names, not objects.
 - Reads are bounded: 100 repositories or commits per page and 50,000 tree or
   diff entries.

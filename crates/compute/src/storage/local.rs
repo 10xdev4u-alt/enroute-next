@@ -357,3 +357,91 @@ fn reconcile(dir: &Path, catalog: &Catalog) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn open(dir: &Path) -> Catalog {
+        Catalog::open(dir.join("catalog.json")).unwrap()
+    }
+
+    /// Write the local copy of `key` in the layout the catalog records it in.
+    fn copy(dir: &Path, key: &FileKey, bytes: usize) {
+        let path = key.local_path(dir);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![7u8; bytes]).unwrap();
+    }
+
+    /// A restart believes the catalog only as far as the files agree with
+    /// it: a copy that is gone or the wrong length is dropped, so nothing
+    /// reads a torn file as if it were whole.
+    #[test]
+    fn reconcile_drops_a_copy_that_is_not_what_was_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = open(dir.path());
+        let (whole, torn, gone) = (
+            FileKey::new("r", "whole"),
+            FileKey::new("r", "torn"),
+            FileKey::new("r", "gone"),
+        );
+        copy(dir.path(), &whole, 4);
+        copy(dir.path(), &torn, 4);
+        catalog.add(&whole, 4, true);
+        catalog.add(&torn, 9, true);
+        catalog.add(&gone, 4, true);
+
+        reconcile(dir.path(), &catalog);
+
+        assert!(whole.local_path(dir.path()).exists());
+        assert_eq!(catalog.keys(), vec![whole.clone()]);
+        assert_eq!(catalog.get(&whole).unwrap().len, 4, "the kept copy changed");
+        assert!(!torn.local_path(dir.path()).exists());
+        assert!(catalog.get(&torn).is_none());
+        assert!(catalog.get(&gone).is_none());
+    }
+
+    /// A file under `layers/` the catalog does not know is removed: a crash
+    /// between writing a copy and recording it, or another version's layout,
+    /// leaves one.
+    #[test]
+    fn reconcile_removes_what_the_catalog_does_not_know() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = open(dir.path());
+        let known = FileKey::new("r", "known");
+        copy(dir.path(), &known, 4);
+        catalog.add(&known, 4, true);
+        // Deep under one repository's directory, as `local_path` places them.
+        let stray = FileKey::new("acme/widgets", "stray").local_path(dir.path());
+        std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+        std::fs::write(&stray, b"x").unwrap();
+
+        reconcile(dir.path(), &catalog);
+
+        assert!(known.local_path(dir.path()).exists());
+        assert!(!stray.exists());
+    }
+
+    /// One file under two names is one file: a local copy of a `file://`
+    /// store shares the stored file's bytes, and the inode is the only
+    /// evidence a link this process did not make is one.
+    #[test]
+    fn shares_inode_sees_one_file_under_two_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = FileKey::new("r", "linked");
+        let stored = dir.path().join("stored.layer");
+        std::fs::write(&stored, b"0123456789").unwrap();
+        let local = key.local_path(dir.path());
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::hard_link(&stored, &local).unwrap();
+
+        assert_eq!(shares_inode(&local, &stored), Some(10));
+
+        // A copy of the same bytes is another file, so it does not share the
+        // stored one's space (and a truncation of it must not look like one).
+        let apart = dir.path().join("copy.layer");
+        std::fs::write(&apart, b"0123456789").unwrap();
+        assert_eq!(shares_inode(&apart, &stored), None);
+        assert_eq!(shares_inode(&dir.path().join("nothing"), &stored), None);
+    }
+}

@@ -114,3 +114,59 @@ pub(crate) fn zlib_decompress_prefix(z: &[u8], out: &mut [u8]) -> Option<usize> 
         (rc == libdeflate_result_LIBDEFLATE_SUCCESS && n == out.len()).then_some(used)
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+
+    use super::*;
+
+    /// The node plans its file budget from this on every call, so it has to
+    /// read the process's own limit rather than a value fixed at build time.
+    /// Raising the soft limit to the hard one is the one change a test can
+    /// make to it and see.
+    #[test]
+    fn the_reported_limit_is_the_processs_own() {
+        let limit = getrlimit(Resource::Nofile);
+        let Some(hard) = limit.maximum else {
+            // No hard limit: the soft limit is already the ceiling.
+            assert_eq!(open_file_limit(), limit.current.unwrap_or(u64::MAX));
+            return;
+        };
+        if limit.current.is_some_and(|soft| soft >= hard) {
+            assert_eq!(open_file_limit(), hard);
+            return;
+        }
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(hard),
+                maximum: Some(hard),
+            },
+        )
+        .expect("raising the soft limit to the hard one is allowed");
+        assert_eq!(open_file_limit(), hard);
+    }
+
+    /// A file offset the OS holds whole is read whole, across several
+    /// buffers: the call is what every local layer read goes through.
+    #[test]
+    fn a_vectored_read_fills_every_buffer_in_order() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("layer");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"0123456789abcdef").unwrap();
+        drop(f);
+        let file = std::fs::File::open(&path).unwrap();
+        let (mut a, mut b, mut c) = ([0u8; 3], [0u8; 5], [0u8; 4]);
+        read_exact_vectored_at(&file, &mut [&mut a, &mut b, &mut c], 2).unwrap();
+        assert_eq!((&a, &b, &c), (b"234", b"56789", b"abcd"));
+        // Past the end there is not enough to fill them, which is not a
+        // short read to retry: the file is the wrong size.
+        let mut big = [0u8; 8];
+        let mut rest = [0u8; 8];
+        let err = read_exact_vectored_at(&file, &mut [&mut big, &mut rest], 12).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+}

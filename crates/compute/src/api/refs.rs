@@ -11,12 +11,30 @@ use enroute_api::api::v1alpha1::{
     IsAncestorRequest, IsAncestorResponse, ListRefsRequest, ListRefsResponse, Ref,
     RefUpdateOutcome, UpdateRefsRequest, UpdateRefsResponse,
 };
+use enroute_shared::state::RepoMeta;
 
 use crate::access::Hidden;
 use crate::contract::wire::{optional_oid, require_oid, wire_oid, wire_system_time};
 use crate::query::{self, RefRejection, RefView};
 
 use super::Api;
+
+/// One listing, as the contract carries it: every ref the view holds, in the
+/// view's order, with the time the state recorded for each.
+fn wire_refs(view: &RefView<'_>, meta: &RepoMeta) -> Vec<Ref> {
+    view.refs
+        .iter()
+        .map(|(name, oid)| Ref {
+            name: name.to_string(),
+            object_id: Some(wire_oid(*oid)),
+            updated_at: wire_system_time(
+                meta.ref_updated_ms
+                    .get(*name)
+                    .map(|ms| UNIX_EPOCH + Duration::from_millis(*ms)),
+            ),
+        })
+        .collect()
+}
 
 #[tonic::async_trait]
 impl RefService for Api {
@@ -29,22 +47,8 @@ impl RefService for Api {
         let (_, snap) = self.snapshot(request.repo.as_ref()).await?;
         // The API's caller is the application, which sees every ref.
         let view = RefView::new(&snap.meta, &Hidden::default(), &request.prefixes);
-        let refs = view
-            .refs
-            .into_iter()
-            .map(|(name, oid)| Ref {
-                name: name.to_string(),
-                object_id: Some(wire_oid(oid)),
-                updated_at: wire_system_time(
-                    snap.meta
-                        .ref_updated_ms
-                        .get(name)
-                        .map(|ms| UNIX_EPOCH + Duration::from_millis(*ms)),
-                ),
-            })
-            .collect();
         Ok(Response::new(ListRefsResponse {
-            refs,
+            refs: wire_refs(&view, &snap.meta),
             default_branch: snap.meta.head.clone(),
         }))
     }
@@ -105,5 +109,108 @@ impl RefService for Api {
             .await
             .map_err(query::Error::from)?;
         Ok(Response::new(IsAncestorResponse { is_ancestor }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::oid::Oid;
+
+    fn meta(refs: &[(&str, u8, u64)]) -> RepoMeta {
+        let mut m = RepoMeta::new();
+        for (name, byte, at) in refs {
+            m.set_ref_at(name, Some(Oid([*byte; 20])), *at);
+        }
+        m
+    }
+
+    /// Every ref: a listing with no prefixes asked for.
+    const ALL: &[&str] = &[];
+
+    fn listed(m: &RepoMeta) -> Vec<Ref> {
+        wire_refs(&RefView::new(m, &Hidden::default(), ALL), m)
+    }
+
+    /// A ref crosses whole: the name, the id as 40 hex digits that parse back
+    /// to the same object, and the time it moved.
+    #[test]
+    fn a_ref_crosses_the_contract_unchanged() {
+        let m = meta(&[("refs/heads/main", 0xab, 1_700_000_000_123)]);
+        let refs = listed(&m);
+        let only = refs.first().expect("one ref");
+        assert_eq!(only.name, "refs/heads/main");
+        assert_eq!(
+            only.object_id.as_ref().map(|id| id.hex.clone()),
+            Some("ab".repeat(20))
+        );
+        assert_eq!(
+            optional_oid(only.object_id.as_ref()).unwrap(),
+            Some(Oid([0xab; 20])),
+            "the id does not parse back to what it names"
+        );
+        let at = only.updated_at.expect("a recorded time");
+        assert_eq!((at.seconds, at.nanos), (1_700_000_000, 0));
+    }
+
+    /// The time is the state's, so it is the clock of the node that proposed
+    /// the change — the limitations page says it can go back, and this is
+    /// what "go back" reaches a caller as.
+    #[test]
+    fn the_update_time_can_go_backwards() {
+        let m = meta(&[
+            ("refs/heads/a", 1, 1_700_000_000_000),
+            ("refs/heads/b", 2, 1_600_000_000_000),
+        ]);
+        let times: Vec<Option<i64>> = listed(&m)
+            .iter()
+            .map(|r| r.updated_at.as_ref().map(|at| at.seconds))
+            .collect();
+        assert_eq!(times, [Some(1_700_000_000), Some(1_600_000_000)]);
+        // A ref the state records no time for has no timestamp, which is not
+        // the same answer as a time of zero.
+        let untimed = listed(&meta(&[("refs/heads/a", 1, 0)]));
+        assert_eq!(untimed.first().and_then(|r| r.updated_at), None);
+        let mut at_zero = meta(&[("refs/heads/a", 1, 1)]);
+        at_zero.ref_updated_ms.insert("refs/heads/a".into(), 0);
+        let epoch = listed(&at_zero);
+        assert_eq!(
+            epoch
+                .first()
+                .and_then(|r| r.updated_at)
+                .map(|at| at.seconds),
+            Some(0)
+        );
+    }
+
+    /// Every ref of the view is listed: `ListRefs` has no page bound, unlike
+    /// the commit and repository listings.
+    #[test]
+    fn every_ref_is_listed() {
+        let names: Vec<(String, u8, u64)> = (0..200)
+            .map(|i| {
+                (
+                    format!("refs/heads/b{i:03}"),
+                    u8::try_from(i % 256).expect("small"),
+                    0,
+                )
+            })
+            .collect();
+        let m = meta(
+            &names
+                .iter()
+                .map(|(name, byte, at)| (name.as_str(), *byte, *at))
+                .collect::<Vec<_>>(),
+        );
+        let refs = listed(&m);
+        assert_eq!(refs.len(), 200);
+        assert_eq!(
+            refs.first().map(|r| r.name.clone()),
+            Some("refs/heads/b000".to_string())
+        );
+        assert_eq!(
+            refs.last().map(|r| r.name.clone()),
+            Some("refs/heads/b199".to_string())
+        );
     }
 }
