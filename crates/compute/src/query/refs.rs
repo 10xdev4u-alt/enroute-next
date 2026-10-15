@@ -68,3 +68,124 @@ impl<'a> RefView<'a> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A repository holding `refs`, each with the tip its byte names.
+    fn meta(refs: &[(&str, u8)]) -> RepoMeta {
+        let mut m = RepoMeta::new();
+        for (name, byte) in refs {
+            m.set_ref_at(name, Some(Oid([*byte; 20])), 0);
+        }
+        m
+    }
+
+    fn view<'a>(m: &'a RepoMeta, hidden: &Hidden, prefixes: &[&str]) -> RefView<'a> {
+        RefView::new(m, hidden, prefixes)
+    }
+
+    fn listed<'a>(v: &'a RefView<'a>) -> Vec<(&'a str, u8)> {
+        v.refs.iter().map(|(name, oid)| (*name, oid.0[0])).collect()
+    }
+
+    fn names<'a>(v: &'a RefView<'a>) -> Vec<&'a str> {
+        v.refs.iter().map(|(name, _)| *name).collect()
+    }
+
+    /// A listing is ordered by name, whatever order the state holds the refs
+    /// in: a client diffing two advertisements depends on it.
+    #[test]
+    fn refs_are_listed_in_name_order() {
+        let m = meta(&[
+            ("refs/tags/v2", 2),
+            ("refs/heads/main", 1),
+            ("refs/tags/v1", 3),
+            ("refs/heads/dev", 4),
+        ]);
+        let v = view(&m, &Hidden::default(), &[]);
+        assert_eq!(
+            listed(&v),
+            [
+                ("refs/heads/dev", 4),
+                ("refs/heads/main", 1),
+                ("refs/tags/v1", 3),
+                ("refs/tags/v2", 2),
+            ]
+        );
+    }
+
+    /// The prefixes are a filter, not a group: each names a prefix, several
+    /// are a union, and none is everything.
+    #[test]
+    fn prefixes_filter_the_listing() {
+        let m = meta(&[
+            ("refs/heads/main", 1),
+            ("refs/heads/dev", 2),
+            ("refs/tags/v1", 3),
+        ]);
+        assert_eq!(
+            names(&view(&m, &Hidden::default(), &["refs/tags/"])),
+            ["refs/tags/v1"]
+        );
+        assert_eq!(
+            names(&view(
+                &m,
+                &Hidden::default(),
+                &["refs/heads/", "refs/tags/"]
+            )),
+            ["refs/heads/dev", "refs/heads/main", "refs/tags/v1"]
+        );
+        assert_eq!(
+            names(&view(&m, &Hidden::default(), &["refs/heads/main"])),
+            ["refs/heads/main"],
+            "a prefix is matched, not required to end at a separator"
+        );
+        assert!(
+            view(&m, &Hidden::default(), &["refs/notes/"])
+                .refs
+                .is_empty()
+        );
+    }
+
+    /// `HEAD` is filtered as a ref named `HEAD`, and reported with the tip of
+    /// the branch it names: an unborn branch has none.
+    #[test]
+    fn head_is_reported_with_the_tip_it_names() {
+        let m = meta(&[("refs/heads/main", 1), ("refs/heads/dev", 2)]);
+        assert_eq!(
+            view(&m, &Hidden::default(), &[]).head,
+            Some(("refs/heads/main", Some(Oid([1; 20]))))
+        );
+        // The branch exists but holds nothing yet.
+        let mut unborn = m.clone();
+        unborn.refs.remove("refs/heads/main");
+        assert_eq!(
+            view(&unborn, &Hidden::default(), &[]).head,
+            Some(("refs/heads/main", None))
+        );
+        // No branch named at all.
+        let mut none = m.clone();
+        none.head.clear();
+        assert_eq!(view(&none, &Hidden::default(), &[]).head, None);
+        // A listing that asks for no branch of it.
+        assert_eq!(view(&m, &Hidden::default(), &["refs/tags/"]).head, None);
+    }
+
+    /// What the caller may not see is not listed, and hiding the branch
+    /// `HEAD` names hides `HEAD` with it.
+    #[test]
+    fn hidden_refs_are_not_listed() {
+        let m = meta(&[("refs/heads/main", 1), ("refs/heads/dev", 2)]);
+        let dev = Hidden::of(&["refs/heads/dev"]);
+        assert_eq!(listed(&view(&m, &dev, &[])), [("refs/heads/main", 1)]);
+        assert_eq!(
+            view(&m, &dev, &[]).head.map(|(name, _)| name),
+            Some("refs/heads/main")
+        );
+        let main = Hidden::of(&["HEAD", "refs/heads/main"]);
+        assert_eq!(listed(&view(&m, &main, &[])), [("refs/heads/dev", 2)]);
+        assert_eq!(view(&m, &main, &[]).head, None);
+    }
+}

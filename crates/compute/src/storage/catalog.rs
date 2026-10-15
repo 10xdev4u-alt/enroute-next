@@ -224,6 +224,15 @@ impl Journal {
 mod tests {
     use super::*;
 
+    /// A copy of `len` bytes, as the tests name one: whole chunks.
+    fn len(chunks: u64) -> u64 {
+        chunks * chunk_bytes()
+    }
+
+    fn chunks(c: &Catalog, k: &FileKey) -> Vec<u64> {
+        c.get(k).unwrap().chunks().collect()
+    }
+
     #[test]
     fn survives_reopen() {
         let dir = tempfile::tempdir().unwrap();
@@ -245,5 +254,90 @@ mod tests {
         drop(c);
         std::fs::write(dir.path().join("catalog.json"), b"{not json").unwrap();
         assert!(open().keys().is_empty());
+    }
+
+    /// A copy arrives whole (a link or a completed fetch) or empty (one the
+    /// loader fills), and either way its length is recorded: the length is
+    /// what a later lookup checks the file on disk against.
+    #[test]
+    fn a_new_copy_is_complete_or_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let whole = FileKey::new("r", "whole");
+        let empty = FileKey::new("r", "empty");
+        c.add(&whole, len(3), true);
+        c.add(&empty, len(3), false);
+        assert_eq!(c.get(&whole).unwrap().len, len(3));
+        assert_eq!(chunks(&c, &whole), vec![0, 1, 2]);
+        assert_eq!(chunks(&c, &empty), Vec::<u64>::new());
+    }
+
+    /// Chunks are bits, so the record spans as many 64-bit words as the
+    /// copy has chunks — the crossing is what a word index could get wrong.
+    #[test]
+    fn the_chunks_of_a_copy_cross_a_word_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let k = FileKey::new("r", "wide");
+        c.add(&k, len(70), false);
+        c.present(&k, 63..66);
+        c.present(&k, 69..70);
+        assert_eq!(chunks(&c, &k), vec![63, 64, 65, 69]);
+        c.evicted(&k, 64);
+        assert_eq!(chunks(&c, &k), vec![63, 65, 69]);
+    }
+
+    /// The length, not the bits, says how long a copy is: a chunk recorded
+    /// past the end is not part of it, so a torn record cannot make a file
+    /// look longer than it is.
+    #[test]
+    fn a_chunk_past_the_end_is_not_part_of_the_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let k = FileKey::new("r", "short");
+        c.add(&k, len(2), false);
+        c.present(&k, 0..5);
+        assert_eq!(chunks(&c, &k), vec![0, 1]);
+    }
+
+    /// The catalog only knows what was recorded for it. A repository it does
+    /// not hold is not an error at any of these paths.
+    #[test]
+    fn a_key_it_does_not_know_stays_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let unknown = FileKey::new("other", "x");
+        c.present(&unknown, 0..4);
+        c.evicted(&unknown, 0);
+        c.forget(&unknown);
+        assert!(c.get(&unknown).is_none());
+        assert!(c.keys().is_empty(), "a change made an entry");
+    }
+
+    /// Forgetting a copy drops it and leaves its repository's others alone.
+    #[test]
+    fn forgetting_one_copy_leaves_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let (a, b) = (FileKey::new("r", "a"), FileKey::new("r", "b"));
+        c.add(&a, len(1), true);
+        c.add(&b, len(1), true);
+        c.forget(&a);
+        assert!(c.get(&a).is_none());
+        assert_eq!(chunks(&c, &b), vec![0]);
+        assert_eq!(c.keys(), vec![b]);
+    }
+
+    /// An eviction clears one bit: the copy keeps the length it had, so the
+    /// loader knows how much of it is still missing.
+    #[test]
+    fn an_eviction_leaves_the_length_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Catalog::open(dir.path().join("catalog.json")).unwrap();
+        let k = FileKey::new("r", "e");
+        c.add(&k, len(4), true);
+        c.evicted(&k, 2);
+        assert_eq!(c.get(&k).unwrap().len, len(4));
+        assert_eq!(chunks(&c, &k), vec![0, 1, 3]);
     }
 }

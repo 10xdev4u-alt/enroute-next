@@ -132,6 +132,17 @@ pub trait RefVisibility: Send + Sync + std::fmt::Debug {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Hidden(Arc<HashSet<String>>);
 
+#[cfg(test)]
+impl Hidden {
+    /// Exactly `names`, as [`hidden_refs`] would produce for a visibility
+    /// that keeps none of them.
+    pub(crate) fn of(names: &[&str]) -> Hidden {
+        Hidden(Arc::new(
+            names.iter().map(|name| (*name).to_string()).collect(),
+        ))
+    }
+}
+
 impl Hidden {
     /// Whether the ref `name` (or `HEAD`) is hidden.
     #[must_use]
